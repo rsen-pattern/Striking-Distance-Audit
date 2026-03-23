@@ -30,10 +30,16 @@ SEMRUSH_COL_MAP = {
     "url": "url",
     "traffic": "traffic",
     "traffic (%)": "traffic_pct",
+    "traffic(%)": "traffic_pct",
     "cpc": "cpc",
     "keyword intents": "keyword_intents",
     "intent": "keyword_intents",
     "position type": "position_type",
+    # Semrush Trends column — monthly SV array e.g. [54,81,10,...]
+    "trends": "trends_raw",
+    # SERP features
+    "serp features by type": "serp_features",
+    "serp features": "serp_features",
 }
 
 CRAWL_COL_MAP = {
@@ -69,8 +75,13 @@ CRAWL_COL_MAP = {
 }
 
 BRAND_COL_MAP = {
+    # Column B in the Cable Melbourne spreadsheet shows as "(exact)"
+    "(exact)": "brand_name",
     "brand name (exact)": "brand_name",
     "brand name": "brand_name",
+    # Column A
+    "domain / brand": "domain",
+    "domain": "domain",
     "tone & style": "tone_style",
     "tone and style": "tone_style",
     "title suffix": "title_suffix",
@@ -164,7 +175,36 @@ def load_semrush_data(
 
     df["keyword_bucket"] = df["position"].apply(_bucket)
 
+    # Parse Semrush Trends array "[54,81,10,...]" — last 3 months vs first 3
+    def _parse_trends(raw) -> str | None:
+        """Return 'rising'|'declining'|'stable'|None from Semrush Trends cell."""
+        if pd.isna(raw) or not str(raw).strip():
+            return None
+        try:
+            nums = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", str(raw))]
+            if len(nums) < 6:
+                return None
+            early = sum(nums[:3]) / 3
+            recent = sum(nums[-3:]) / 3
+            if early == 0:
+                return "new" if recent > 0 else "stable"
+            change = (recent - early) / early
+            if change > 0.15:   return "rising"
+            if change < -0.15:  return "declining"
+            return "stable"
+        except Exception:
+            return None
+
+    if "trends_raw" in df.columns:
+        df["trend_from_sv"] = df["trends_raw"].apply(_parse_trends)
+    else:
+        df["trend_from_sv"] = None
+
     def _trend(row):
+        # Prefer SV-based trend from Trends column; fall back to position delta
+        sv_trend = row.get("trend_from_sv")
+        if sv_trend:
+            return sv_trend
         pp = row.get("prev_position")
         if pd.isna(pp) or pp == 0:
             return "new"
