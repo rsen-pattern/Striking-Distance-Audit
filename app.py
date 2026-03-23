@@ -198,7 +198,7 @@ def render_sidebar() -> dict:
     service_account_json = st.sidebar.text_area("Service Account JSON", height=80)
 
     st.sidebar.markdown("---")
-    run_audit = st.sidebar.button("▶ Run Audit", use_container_width=True, type="primary")
+    run_audit = st.sidebar.button("▶ Run Audit", width="stretch", type="primary")
 
     return dict(
         semrush_key=semrush_key, bifrost_key=bifrost_key, bifrost_base_url=bifrost_base_url,
@@ -259,7 +259,7 @@ def render_url_card(item: dict):
                 "Trend":    k.get("trend", ""),
                 "Delta":    k.get("delta", ""),
             } for k in protected_kws]
-            st.dataframe(pd.DataFrame(prot_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(prot_rows), width="stretch", hide_index=True)
 
         # ── Section B: Striking distance keywords ─────────────────────────
         if striking_kws:
@@ -286,14 +286,14 @@ def render_url_card(item: dict):
                 rows = [{
                     "Keyword":   k["keyword"],
                     "Pos":       _safe_int(k.get("position")),
-                    "Prev":      _safe_int(k.get("prev_position")) or "–",
+                    "Prev":      _safe_int(k.get("prev_position")),
                     "SV":        _safe_int(k.get("search_volume")),
                     "KD":        _safe_int(k.get("kd")),
                     "Trend":     k.get("trend", ""),
                     "Score":     k.get("opp_score", ""),
                     "Decision":  k.get("decision", ""),
                 } for k in bucket_kws]
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
         # ── Section C: AI Recommendations ────────────────────────────────
         st.markdown('<div class="section-header-ai">✨ AI Recommendations</div>', unsafe_allow_html=True)
@@ -348,7 +348,7 @@ def render_url_card(item: dict):
                     "Decision":    d.get("decision", ""),
                     "Replacement": d.get("replacement_keyword", "") or "",
                     "Note":        d.get("note", "") or "",
-                } for d in ai_decisions]), use_container_width=True, hide_index=True)
+                } for d in ai_decisions]), width="stretch", hide_index=True)
 
         # Competitor SERP table
         if competitors:
@@ -364,9 +364,9 @@ def render_url_card(item: dict):
                         "Meta":   c.get("meta_description", ""),
                         "H1":     c.get("h1", ""),
                         "Words":  c.get("word_count", ""),
-                        "Source": "scraped" if scraped else f"AI-only ({c.get('error','')[:40]})",
+                        "Source": "scraped" if scraped else f"AI-only ({(c.get('error') or '')[:40]})",
                     })
-                st.dataframe(pd.DataFrame(comp_rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(comp_rows), width="stretch", hide_index=True)
 
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
@@ -609,7 +609,7 @@ def main():
                     data=to_excel_bytes(out_df),
                     file_name=f"sda_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
+                    width="stretch",
                 )
             with dl2:
                 st.download_button(
@@ -617,7 +617,7 @@ def main():
                     data=out_df.to_csv(index=False).encode(),
                     file_name=f"sda_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                     mime="text/csv",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
     def render_results(results):
