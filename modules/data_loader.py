@@ -147,8 +147,8 @@ def load_semrush_data(
 
     # Drop rows with no keyword or no URL
     df = df.dropna(subset=["keyword", "url"])
-    df = df[df["keyword"].str.strip().astype(bool)]
-    df = df[df["url"].str.strip().astype(bool)]
+    df = df[df["keyword"].astype(str).str.strip().astype(bool)]
+    df = df[df["url"].astype(str).str.strip().astype(bool)]
 
     # Normalise URLs (strip trailing slash)
     df["url"] = df["url"].str.strip().str.rstrip("/")
@@ -207,12 +207,18 @@ def load_crawl_data(
         raise ValueError("Crawl data missing 'Address' column.")
 
     # Filter to 200 + Indexable
+    # Force masks to plain numpy bool — pandas 2.x nullable dtypes (Int64, BooleanArray)
+    # raise "arg must be a list, tuple, 1-d array, or Series" when used directly as index.
     if "status_code" in df.columns:
         df["status_code"] = pd.to_numeric(df["status_code"], errors="coerce")
-        df = df[df["status_code"] == 200]
+        mask = (df["status_code"] == 200).fillna(False).astype(bool)
+        df = df[mask]
 
     if "indexability" in df.columns:
-        df = df[df["indexability"].str.strip().str.lower() == "indexable"]
+        mask = (
+            df["indexability"].astype(str).str.strip().str.lower() == "indexable"
+        ).fillna(False).astype(bool)
+        df = df[mask]
 
     # Fill missing on-page columns
     text_cols = [
@@ -229,9 +235,9 @@ def load_crawl_data(
     numeric_cols = ["word_count", "readability", "sentence_count"]
     for col in numeric_cols:
         if col not in df.columns:
-            df[col] = None
+            df[col] = float("nan")
         else:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
 
     df["url"] = df["url"].str.strip().str.rstrip("/")
     df = df.dropna(subset=["url"])
