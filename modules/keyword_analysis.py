@@ -14,14 +14,14 @@ logger = logging.getLogger(__name__)
 
 # Keywords / URL path fragments that indicate navigational / branded intent
 NAVIGATIONAL_PATTERNS = re.compile(
-    r"\b(login|sign in|sign up|register|careers|jobs|contact|about us|sitemap|"
+    r"\b(?:login|sign in|sign up|register|careers|jobs|contact|about us|sitemap|"
     r"privacy policy|terms|cookie|faq|help center|support)\b",
     re.IGNORECASE,
 )
 
 NAVIGATIONAL_URL_PATTERNS = re.compile(
-    r"/(login|sign-?in|sign-?up|register|careers|jobs|contact|about|sitemap|"
-    r"privacy|terms|cookie|faq|help|support)(/|$)",
+    r"/(?:login|sign-?in|sign-?up|register|careers|jobs|contact|about|sitemap|"
+    r"privacy|terms|cookie|faq|help|support)(?:/|$)",
     re.IGNORECASE,
 )
 
