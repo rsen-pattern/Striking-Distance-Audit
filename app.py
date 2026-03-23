@@ -85,40 +85,193 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap');
-html, body, [class*="css"] { font-family: 'DM Sans', sans-serif !important; }
+/* ── Pattern Brand Tokens ─────────────────────────────────────────────────
+   Primary   : #009bff  #fcfcfc  #090a0f
+   Secondary : #770bff  #4cc3ae  #00084d  #b3b3b3
+   Charts    : #73cdff  #076ae2  #004589  #e53e51  #f56969  #ffb548  #c2e76b
+───────────────────────────────────────────────────────────────────────── */
 
-.metric-card {
-    background: #1a1a1f; border: 1px solid #2a2a30; border-radius: 10px;
-    padding: 16px 20px; text-align: center;
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'Inter', sans-serif !important;
+    background-color: #090a0f !important;
+    color: #fcfcfc !important;
 }
-.metric-card .value { font-family:'DM Mono',monospace; font-size:2rem; font-weight:600; color:#c8ff6e; }
-.metric-card .label { font-size:0.78rem; color:#888; margin-top:4px; text-transform:uppercase; letter-spacing:0.05em; }
 
-.badge-optimise { background:#1a3a1a; color:#6fcf6f; padding:2px 10px; border-radius:12px; font-size:0.75rem; font-weight:600; display:inline-block; margin:2px; }
-.badge-replace  { background:#3a1a1a; color:#cf6f6f; padding:2px 10px; border-radius:12px; font-size:0.75rem; font-weight:600; display:inline-block; margin:2px; }
-.badge-monitor  { background:#3a3a1a; color:#cfcf6f; padding:2px 10px; border-radius:12px; font-size:0.75rem; font-weight:600; display:inline-block; margin:2px; }
-.badge-protect  { background:#0d2a1a; color:#c8ff6e; padding:2px 10px; border-radius:12px; font-size:0.75rem; font-weight:600; display:inline-block; margin:2px; }
-.badge-push-up  { background:#1a2a3a; color:#6fc8ff; padding:2px 10px; border-radius:12px; font-size:0.75rem; font-weight:600; display:inline-block; margin:2px; }
+/* ── Top header bar ──────────────────────────────────────────────────── */
+header[data-testid="stHeader"] {
+    background: linear-gradient(90deg, #770bff 0%, #2a0880 45%, #090a0f 100%) !important;
+    border-bottom: 1px solid #770bff44;
+}
 
-.section-header-protected { color:#c8ff6e; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; border-bottom:1px solid #2a3a2a; padding-bottom:4px; margin:12px 0 8px; }
-.section-header-striking  { color:#6fc8ff; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; border-bottom:1px solid #1a2a3a; padding-bottom:4px; margin:12px 0 8px; }
-.section-header-ai        { color:#cfcf6f; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; border-bottom:1px solid #3a3a1a; padding-bottom:4px; margin:12px 0 8px; }
+/* ── Sidebar ──────────────────────────────────────────────────────────── */
+section[data-testid="stSidebar"] {
+    background: #0a0b12 !important;
+    border-right: 1px solid #1e2133 !important;
+}
+section[data-testid="stSidebar"] * { color: #fcfcfc !important; }
+section[data-testid="stSidebar"] .stSlider > div > div > div { background: #009bff !important; }
+section[data-testid="stSidebar"] hr { border-color: #1e2133 !important; }
 
-.kw-protected { background:#0d2a1a; border:1px solid #1a4a1a; border-radius:6px; padding:6px 10px; margin:3px 0; font-family:'DM Mono',monospace; font-size:0.78rem; }
-.kw-prime     { background:#0d1a2a; border:1px solid #1a3a5a; border-radius:6px; padding:6px 10px; margin:3px 0; font-family:'DM Mono',monospace; font-size:0.78rem; }
-.kw-page1     { background:#1a1a2f; border:1px solid #2a2a4a; border-radius:6px; padding:6px 10px; margin:3px 0; font-family:'DM Mono',monospace; font-size:0.78rem; }
-.kw-page2     { background:#1a1a1a; border:1px solid #2a2a2a; border-radius:6px; padding:6px 10px; margin:3px 0; font-family:'DM Mono',monospace; font-size:0.78rem; }
+/* ── Main surface ─────────────────────────────────────────────────────── */
+.main .block-container { background: #090a0f !important; padding-top: 1.5rem; }
 
-.tag-block { background:#1a1a1f; border:1px solid #2a2a30; border-radius:8px; padding:12px 14px; margin-bottom:8px; font-family:'DM Mono',monospace; font-size:0.82rem; }
-.tag-label { font-size:0.7rem; color:#888; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px; }
-.tag-value { color:#e8e6e0; }
-.tag-value.recommended { color:#c8ff6e; }
-.char-count { color:#666; font-size:0.7rem; margin-top:4px; }
-.protection-ok   { color:#6fcf6f; font-size:0.75rem; }
-.protection-warn { color:#cf6f30; font-size:0.75rem; font-weight:600; }
+/* Expanders (URL cards) */
+div[data-testid="stExpander"] {
+    background: #0f1119 !important;
+    border: 1px solid #1e2133 !important;
+    border-radius: 10px !important;
+    margin-bottom: 8px;
+}
+div[data-testid="stExpander"] summary {
+    color: #009bff !important;
+    font-weight: 500;
+}
+div[data-testid="stExpander"] summary:hover { color: #73cdff !important; }
 
-.log-box { background:#0d0d0f; border:1px solid #2a2a30; border-radius:6px; padding:10px 14px; font-family:'DM Mono',monospace; font-size:0.78rem; color:#aaa; max-height:200px; overflow-y:auto; }
+/* Dataframes */
+div[data-testid="stDataFrame"] { border-radius: 8px; overflow: hidden; }
+div[data-testid="stDataFrame"] th {
+    background: #0f1119 !important;
+    color: #b3b3b3 !important;
+    font-size: 0.75rem !important;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid #1e2133 !important;
+}
+div[data-testid="stDataFrame"] td {
+    background: #090a0f !important;
+    color: #fcfcfc !important;
+    font-size: 0.82rem !important;
+    border-bottom: 1px solid #1a1d2a !important;
+}
+
+/* Primary button */
+div[data-testid="stButton"] > button[kind="primary"] {
+    background: linear-gradient(135deg, #770bff 0%, #009bff 100%) !important;
+    border: none !important;
+    color: #fcfcfc !important;
+    font-weight: 600 !important;
+    border-radius: 8px !important;
+    letter-spacing: 0.02em;
+}
+div[data-testid="stButton"] > button[kind="primary"]:hover {
+    background: linear-gradient(135deg, #8f2fff 0%, #1eaaff 100%) !important;
+    box-shadow: 0 0 16px #770bff66;
+}
+
+/* Download buttons */
+div[data-testid="stDownloadButton"] > button {
+    background: #0f1119 !important;
+    border: 1px solid #009bff !important;
+    color: #009bff !important;
+    border-radius: 8px !important;
+    font-weight: 500 !important;
+}
+div[data-testid="stDownloadButton"] > button:hover {
+    background: #009bff18 !important;
+    box-shadow: 0 0 10px #009bff44;
+}
+
+/* Progress bar */
+div[data-testid="stProgress"] > div > div { background: #009bff !important; }
+
+/* ── Metric cards ────────────────────────────────────────────────────── */
+.metric-card {
+    background: #0f1119;
+    border: 1px solid #1e2133;
+    border-radius: 10px;
+    padding: 16px 20px;
+    text-align: center;
+}
+.metric-card .value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 2rem;
+    font-weight: 600;
+    color: #009bff;
+}
+.metric-card .label {
+    font-size: 0.75rem;
+    color: #b3b3b3;
+    margin-top: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+/* ── Decision badges ─────────────────────────────────────────────────── */
+.badge-protect  { background:#00084d; color:#009bff;  border:1px solid #009bff55; padding:2px 10px; border-radius:12px; font-size:0.75rem; font-weight:600; display:inline-block; margin:2px; }
+.badge-optimise { background:#062e27; color:#4cc3ae;  border:1px solid #4cc3ae55; padding:2px 10px; border-radius:12px; font-size:0.75rem; font-weight:600; display:inline-block; margin:2px; }
+.badge-replace  { background:#2d0a10; color:#e53e51;  border:1px solid #e53e5155; padding:2px 10px; border-radius:12px; font-size:0.75rem; font-weight:600; display:inline-block; margin:2px; }
+.badge-monitor  { background:#18191f; color:#b3b3b3;  border:1px solid #b3b3b333; padding:2px 10px; border-radius:12px; font-size:0.75rem; font-weight:600; display:inline-block; margin:2px; }
+.badge-push-up  { background:#1a0533; color:#a370ff;  border:1px solid #770bff55; padding:2px 10px; border-radius:12px; font-size:0.75rem; font-weight:600; display:inline-block; margin:2px; }
+
+/* ── Section headers ─────────────────────────────────────────────────── */
+.section-header-protected {
+    color: #009bff; font-size: 0.75rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    border-bottom: 1px solid #009bff33; padding-bottom: 5px; margin: 14px 0 8px;
+}
+.section-header-striking {
+    color: #770bff; font-size: 0.75rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    border-bottom: 1px solid #770bff33; padding-bottom: 5px; margin: 14px 0 8px;
+}
+.section-header-ai {
+    color: #4cc3ae; font-size: 0.75rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    border-bottom: 1px solid #4cc3ae33; padding-bottom: 5px; margin: 14px 0 8px;
+}
+
+/* ── Keyword row classes ─────────────────────────────────────────────── */
+.kw-protected { background:#00084d18; border:1px solid #009bff22; border-radius:6px; padding:6px 10px; margin:3px 0; font-family:'JetBrains Mono',monospace; font-size:0.78rem; }
+.kw-prime     { background:#0d0d2a;   border:1px solid #770bff44; border-radius:6px; padding:6px 10px; margin:3px 0; font-family:'JetBrains Mono',monospace; font-size:0.78rem; }
+.kw-page1     { background:#090a18;   border:1px solid #1e2133;   border-radius:6px; padding:6px 10px; margin:3px 0; font-family:'JetBrains Mono',monospace; font-size:0.78rem; }
+.kw-page2     { background:#0c0c11;   border:1px solid #18191f;   border-radius:6px; padding:6px 10px; margin:3px 0; font-family:'JetBrains Mono',monospace; font-size:0.78rem; }
+
+/* ── Tag blocks (on-page / recommendations) ──────────────────────────── */
+.tag-block {
+    background: #0f1119;
+    border: 1px solid #1e2133;
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82rem;
+}
+.tag-label { font-size: 0.68rem; color: #b3b3b3; text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 5px; }
+.tag-value { color: #fcfcfc; }
+.tag-value.recommended { color: #4cc3ae; }
+.char-count { color: #555; font-size: 0.68rem; margin-top: 4px; }
+.protection-ok   { color: #4cc3ae; font-size: 0.75rem; }
+.protection-warn { color: #f56969; font-size: 0.75rem; font-weight: 600; }
+
+/* ── Log / progress box ─────────────────────────────────────────────── */
+.log-box {
+    background: #0a0b12;
+    border: 1px solid #1e2133;
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.78rem;
+    color: #b3b3b3;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+/* ── App title banner ────────────────────────────────────────────────── */
+.app-header {
+    background: linear-gradient(135deg, #770bff18 0%, #009bff10 100%);
+    border: 1px solid #770bff44;
+    border-radius: 12px;
+    padding: 18px 24px;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+.app-header h1 { font-size: 1.5rem; font-weight: 700; color: #fcfcfc; margin: 0; }
+.app-header p  { font-size: 0.82rem; color: #b3b3b3; margin: 4px 0 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -150,7 +303,13 @@ def decision_badge(decision: str) -> str:
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 def render_sidebar() -> dict:
-    st.sidebar.markdown("## 🎯 Striking Distance Audit")
+    st.sidebar.markdown(
+        '<div style="padding:12px 0 8px;">'
+        '<span style="font-size:1.1rem;font-weight:700;color:#009bff;">⚡ Striking Distance</span>'
+        '<br><span style="font-size:0.7rem;color:#b3b3b3;letter-spacing:0.08em;text-transform:uppercase;">SEO Audit · Pattern</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
     st.sidebar.markdown("---")
 
     st.sidebar.markdown("### API Keys")
@@ -583,10 +742,15 @@ def run_audit_pipeline(cfg: dict, status_ph, progress_ph, log_ph, metrics_ph, re
 def main():
     cfg = render_sidebar()
 
-    st.markdown("# 🎯 Striking Distance SEO Audit")
     st.markdown(
-        "Automates the full striking distance workflow: "
-        "filter → score → protect → SERP → scrape → AI recommendations."
+        '<div class="app-header">'
+        '<div>'
+        '<h1>🎯 Striking Distance SEO Audit</h1>'
+        '<p>Automates the full striking-distance workflow: '
+        'filter → score → protect → SERP → scrape → AI recommendations.</p>'
+        '</div>'
+        '</div>',
+        unsafe_allow_html=True,
     )
 
     metrics_ph   = st.empty()
