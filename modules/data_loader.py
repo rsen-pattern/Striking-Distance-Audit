@@ -147,11 +147,11 @@ def load_semrush_data(
 
     # Drop rows with no keyword or no URL
     df = df.dropna(subset=["keyword", "url"])
-    df = df[df["keyword"].astype(str).str.strip().astype(bool)]
-    df = df[df["url"].astype(str).str.strip().astype(bool)]
+    df = df[df["keyword"].astype(str).str.len() > 0]
+    df = df[df["url"].astype(str).str.len() > 0]
 
     # Normalise URLs (strip trailing slash)
-    df["url"] = df["url"].str.strip().str.rstrip("/")
+    df["url"] = df["url"].astype(str).str.strip().str.rstrip("/")
 
     # ── Derived columns ──────────────────────────────────────────────────────
 
@@ -239,9 +239,9 @@ def load_crawl_data(
         else:
             df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
 
-    df["url"] = df["url"].str.strip().str.rstrip("/")
+    df["url"] = df["url"].astype(str).str.strip().str.rstrip("/")
     df = df.dropna(subset=["url"])
-    df = df[df["url"].str.strip().astype(bool)]
+    df = df[df["url"].str.len() > 0]
 
     logger.info("Crawl data loaded: %d indexable rows", len(df))
     return df.reset_index(drop=True)
