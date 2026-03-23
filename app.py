@@ -277,12 +277,18 @@ def render_url_card(item: dict):
                 if not bucket_kws:
                     continue
                 st.caption(bucket_display[bucket])
+                def _safe_int(val, default=0):
+                    try:
+                        return int(val) if val is not None and str(val) not in ("", "nan") else default
+                    except (ValueError, TypeError):
+                        return default
+
                 rows = [{
                     "Keyword":   k["keyword"],
-                    "Pos":       int(k.get("position", 0)),
-                    "Prev":      int(k.get("prev_position", 0)) if k.get("prev_position") else "–",
-                    "SV":        int(k.get("search_volume", 0)),
-                    "KD":        int(k.get("kd", 0)),
+                    "Pos":       _safe_int(k.get("position")),
+                    "Prev":      _safe_int(k.get("prev_position")) or "–",
+                    "SV":        _safe_int(k.get("search_volume")),
+                    "KD":        _safe_int(k.get("kd")),
                     "Trend":     k.get("trend", ""),
                     "Score":     k.get("opp_score", ""),
                     "Decision":  k.get("decision", ""),

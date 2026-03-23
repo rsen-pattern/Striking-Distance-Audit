@@ -118,7 +118,9 @@ def _normalise_columns(df: pd.DataFrame, col_map: dict) -> pd.DataFrame:
 def _fetch_csv_url(url: str) -> pd.DataFrame:
     resp = requests.get(url, timeout=30)
     resp.raise_for_status()
-    return pd.read_csv(io.StringIO(resp.text))
+    # on_bad_lines='skip' handles cells with unquoted commas (common in
+    # Google Sheets exports of Semrush data where Trends arrays contain commas)
+    return pd.read_csv(io.StringIO(resp.text), on_bad_lines="skip")
 
 
 def _read_sheet_from_excel(excel_file, sheet_name: str) -> pd.DataFrame:
