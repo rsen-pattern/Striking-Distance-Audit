@@ -116,6 +116,18 @@ def _format_competitor_block(idx: int, comp: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+PAGE_COPY_SNIPPET_CHARS = 800   # max body copy chars sent to AI
+
+
+def _kw_in_copy(keyword: str, copy: str) -> bool:
+    """True if keyword (or any word > 4 chars from it) appears in body copy."""
+    if not copy or not keyword:
+        return False
+    copy_l = copy.lower()
+    kw_l   = keyword.lower()
+    return kw_l in copy_l or any(w in copy_l for w in kw_l.split() if len(w) > 4)
+
+
 def _build_user_prompt(url_group: dict, competitors: list[dict]) -> str:
     url         = url_group["url"]
     primary_kw  = url_group.get("primary_keyword") or ""
@@ -125,6 +137,12 @@ def _build_user_prompt(url_group: dict, competitors: list[dict]) -> str:
 
     protected_kws  = url_group.get("protected_keywords", [])
     striking_kws   = url_group.get("striking_keywords", [])[:MAX_KEYWORDS_IN_PROMPT]
+
+    # On-page content signals from Screaming Frog
+    h2s        = url_group.get("h2s", [])
+    word_count = url_group.get("word_count")
+    readability = url_group.get("readability")
+    page_copy  = (url_group.get("page_copy") or "").strip()
 
     # ── Protected keyword block ───────────────────────────────────────────
     if protected_kws:
@@ -160,6 +178,46 @@ You have full flexibility to choose the primary keyword from the striking distan
         )
     kw_block = "\n".join(kw_lines) if kw_lines else "  No striking distance keywords."
 
+    # ── Page content block (from Screaming Frog) ─────────────────────────
+    content_lines = []
+    if word_count is not None:
+        content_lines.append(f"  Word count:   {int(word_count)}")
+    if readability is not None:
+        content_lines.append(f"  Readability:  {readability} (Flesch — higher = easier)")
+    if h2s:
+        content_lines.append("  H2 headings:")
+        content_lines.extend(f"    • {h}" for h in h2s)
+    if page_copy:
+        snippet = page_copy[:PAGE_COPY_SNIPPET_CHARS]
+        if len(page_copy) > PAGE_COPY_SNIPPET_CHARS:
+            snippet += "…"
+        content_lines.append(f"  Body copy snippet:\n    {snippet}")
+
+        # Flag which striking keywords are (not) present in body copy
+        missing_from_copy = [
+            kw["keyword"] for kw in striking_kws
+            if not _kw_in_copy(kw["keyword"], page_copy)
+        ]
+        present_in_copy = [
+            kw["keyword"] for kw in striking_kws
+            if _kw_in_copy(kw["keyword"], page_copy)
+        ]
+        if present_in_copy:
+            content_lines.append(
+                f"  Keywords present in body copy: {', '.join(present_in_copy[:10])}"
+            )
+        if missing_from_copy:
+            content_lines.append(
+                f"  ⚠ Keywords NOT in body copy (risky to target without content support): "
+                f"{', '.join(missing_from_copy[:10])}"
+            )
+
+    page_content_block = (
+        "\nPAGE CONTENT (from Screaming Frog):\n" + "\n".join(content_lines)
+        if content_lines
+        else "\nPAGE CONTENT: Not available from crawl export."
+    )
+
     # ── Competitor block ──────────────────────────────────────────────────
     comp_blocks = "\n\n".join(
         _format_competitor_block(i + 1, comp)
@@ -194,6 +252,7 @@ CURRENT ON-PAGE:
   Title: {curr_title}
   Meta:  {curr_meta}
   H1:    {curr_h1}
+{page_content_block}
 {protected_block}
 STRIKING DISTANCE KEYWORDS TO IMPROVE (pos 4–20):
 {kw_block}

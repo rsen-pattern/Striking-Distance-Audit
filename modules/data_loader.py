@@ -37,15 +37,35 @@ SEMRUSH_COL_MAP = {
 }
 
 CRAWL_COL_MAP = {
+    # Core
     "address": "url",
     "status code": "status_code",
     "indexability": "indexability",
+    # Title / meta / H1
     "title 1": "title",
     "meta description 1": "meta_description",
     "h1-1": "h1",
     "h1 1": "h1",
     "title 1 length": "title_length",
     "meta description 1 length": "meta_length",
+    # Subheadings
+    "h2-1": "h2_1",
+    "h2 1": "h2_1",
+    "h2-2": "h2_2",
+    "h2 2": "h2_2",
+    "h2-3": "h2_3",
+    "h2 3": "h2_3",
+    "h3-1": "h3_1",
+    "h3 1": "h3_1",
+    # Body copy (Screaming Frog "Copy" tab export)
+    "copy 1": "page_copy",
+    "copy": "page_copy",
+    "body copy": "page_copy",
+    # Content metrics
+    "word count": "word_count",
+    "readability": "readability",
+    "flesch reading ease score": "readability",
+    "sentence count": "sentence_count",
 }
 
 BRAND_COL_MAP = {
@@ -195,11 +215,23 @@ def load_crawl_data(
         df = df[df["indexability"].str.strip().str.lower() == "indexable"]
 
     # Fill missing on-page columns
-    for col in ["title", "meta_description", "h1"]:
+    text_cols = [
+        "title", "meta_description", "h1",
+        "h2_1", "h2_2", "h2_3", "h3_1",
+        "page_copy",
+    ]
+    for col in text_cols:
         if col not in df.columns:
             df[col] = ""
         else:
             df[col] = df[col].fillna("").astype(str)
+
+    numeric_cols = ["word_count", "readability", "sentence_count"]
+    for col in numeric_cols:
+        if col not in df.columns:
+            df[col] = None
+        else:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df["url"] = df["url"].str.strip().str.rstrip("/")
     df = df.dropna(subset=["url"])

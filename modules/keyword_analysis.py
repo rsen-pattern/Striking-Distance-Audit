@@ -112,8 +112,14 @@ def build_url_keyword_map(
     """
     df = semrush_df.copy()
 
-    # Build crawl lookup
-    crawl_cols = [c for c in ["title", "meta_description", "h1"] if c in crawl_df.columns]
+    # Build crawl lookup (all on-page fields from Screaming Frog)
+    _wanted_crawl = [
+        "title", "meta_description", "h1",
+        "h2_1", "h2_2", "h2_3", "h3_1",
+        "page_copy",
+        "word_count", "readability", "sentence_count",
+    ]
+    crawl_cols = [c for c in _wanted_crawl if c in crawl_df.columns]
     crawl_lookup = (
         crawl_df.set_index("url")[crawl_cols].to_dict("index")
         if crawl_cols else {}
@@ -175,12 +181,18 @@ def build_url_keyword_map(
         primary = striking_records[0] if striking_records else None
 
         # Crawl data for this URL
-        on_page = crawl_lookup.get(url, {})
+        on_page = crawl_lookup.get(str(url), {})
 
         optimise_count = sum(1 for k in striking_records if k.get("decision") == "OPTIMISE")
         replace_count  = sum(1 for k in striking_records if k.get("decision") == "REPLACE")
         monitor_count  = sum(1 for k in striking_records if k.get("decision") == "MONITOR")
         total_opp      = sum(k.get("opp_score", 0) for k in striking_records)
+
+        # Collect H2s and H3s from individual SF columns into lists
+        h2s = [on_page.get(f"h2_{i}", "") for i in range(1, 4)]
+        h2s = [h for h in h2s if h and str(h).strip()]
+        h3s = [on_page.get("h3_1", "")]
+        h3s = [h for h in h3s if h and str(h).strip()]
 
         groups.append({
             "url":                url,
@@ -194,9 +206,15 @@ def build_url_keyword_map(
             "optimise_count":     optimise_count,
             "replace_count":      replace_count,
             "monitor_count":      monitor_count,
+            # On-page from Screaming Frog
             "current_title":      on_page.get("title", ""),
             "current_meta":       on_page.get("meta_description", ""),
             "current_h1":         on_page.get("h1", ""),
+            "h2s":                h2s,
+            "h3s":                h3s,
+            "word_count":         on_page.get("word_count"),
+            "readability":        on_page.get("readability"),
+            "page_copy":          on_page.get("page_copy", ""),
             "total_opportunity":  total_opp,
         })
 

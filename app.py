@@ -231,6 +231,19 @@ def render_url_card(item: dict):
             st.markdown(tag_block("Meta Description", ug.get("current_meta",  "")),  unsafe_allow_html=True)
             st.markdown(tag_block("H1",               ug.get("current_h1",    "")),  unsafe_allow_html=True)
 
+            # Content signals from Screaming Frog
+            h2s_list  = ug.get("h2s", [])
+            wc        = ug.get("word_count")
+            read_ease = ug.get("readability")
+            if wc or read_ease or h2s_list:
+                meta_parts = []
+                if wc:        meta_parts.append(f"{int(wc)} words")
+                if read_ease: meta_parts.append(f"readability {read_ease}")
+                if meta_parts:
+                    st.caption("  ".join(meta_parts))
+            if h2s_list:
+                st.markdown(tag_block("H2 Headings", " · ".join(h2s_list)), unsafe_allow_html=True)
+
         with col_rec:
             st.markdown("**Recommendations**")
             if ai.get("recommended_title"):

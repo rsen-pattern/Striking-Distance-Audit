@@ -40,6 +40,9 @@ COL_WIDTHS = {
     "keywords_to_optimise":  40,
     "keywords_to_replace":   40,
     "replacement_suggestions": 50,
+    "word_count":            10,
+    "readability":           12,
+    "page_h2s":              55,
     "comp1_url":             45,
     "comp1_title":           50,
     "comp1_meta":            60,
@@ -110,6 +113,10 @@ def build_output_dataframe(processed_results: list[dict[str, Any]]) -> pd.DataFr
             "keywords_to_optimise":  ", ".join(optimise_kws),
             "keywords_to_replace":   ", ".join(replace_kws),
             "replacement_suggestions": str(replacement_suggestions) if replacement_suggestions else "",
+            # On-page content signals
+            "word_count":            ug.get("word_count") or "",
+            "readability":           ug.get("readability") or "",
+            "page_h2s":              " | ".join(ug.get("h2s", [])),
             # Competitors
             "comp1_url":   comp_field(0, "url"),
             "comp1_title": comp_field(0, "title"),
