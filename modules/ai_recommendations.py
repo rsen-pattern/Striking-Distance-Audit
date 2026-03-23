@@ -369,6 +369,7 @@ def generate_recommendations_for_url(
             ],
             temperature=TEMPERATURE,
             max_tokens=MAX_TOKENS,
+            timeout=90,   # seconds — prevents indefinite hangs on Bifrost
         )
     except Exception as exc:
         logger.warning("AI API call failed for %s: %s", url_group["url"], exc)

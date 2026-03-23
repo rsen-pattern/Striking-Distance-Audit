@@ -3,8 +3,10 @@ Striking Distance SEO Audit Tool
 Streamlit entrypoint — run with: streamlit run app.py
 """
 
+import io
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -20,6 +22,59 @@ from modules.output import build_output_dataframe, to_excel_bytes, export_to_gsh
 logging.basicConfig(stream=sys.stdout, level=logging.INFO,
                     format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
+
+
+# ── Cached data loaders ───────────────────────────────────────────────────────
+# @st.cache_data uses the argument values as the cache key.
+# We pass raw bytes (not file objects) so the key is deterministic across reruns.
+
+@st.cache_data(show_spinner=False)
+def _load_semrush(file_bytes: bytes | None, sheet_url: str | None) -> pd.DataFrame:
+    src = io.BytesIO(file_bytes) if file_bytes else None
+    return load_semrush_data(excel_file=src, sheet_url=sheet_url)
+
+
+@st.cache_data(show_spinner=False)
+def _load_crawl(file_bytes: bytes | None, sheet_url: str | None) -> pd.DataFrame:
+    src = io.BytesIO(file_bytes) if file_bytes else None
+    return load_crawl_data(excel_file=src, sheet_url=sheet_url)
+
+
+@st.cache_data(show_spinner=False)
+def _load_brand_rules(file_bytes: bytes | None, sheet_url: str | None) -> dict:
+    src = io.BytesIO(file_bytes) if file_bytes else None
+    try:
+        return load_brand_rules(excel_file=src, sheet_url=sheet_url)
+    except Exception:
+        from modules.data_loader import _default_brand_rules
+        return _default_brand_rules()
+
+
+@st.cache_data(show_spinner=False)
+def _build_keyword_map(
+    semrush_key_hash: str,   # unused but forces cache invalidation when data changes
+    crawl_key_hash: str,
+    semrush_bytes: bytes | None,
+    crawl_bytes: bytes | None,
+    semrush_url: str | None,
+    crawl_url: str | None,
+    min_sv: int,
+    min_pos: int,
+    max_pos: int,
+    brand_name: str,
+    max_urls: int,
+) -> list[dict]:
+    semrush_df = _load_semrush(semrush_bytes, semrush_url)
+    crawl_df   = _load_crawl(crawl_bytes, crawl_url)
+    return build_url_keyword_map(
+        semrush_df=semrush_df,
+        crawl_df=crawl_df,
+        min_sv=min_sv,
+        min_pos=min_pos,
+        max_pos=max_pos,
+        brand_name=brand_name,
+        max_urls=max_urls,
+    )
 
 st.set_page_config(
     page_title="Striking Distance Audit",
@@ -126,6 +181,18 @@ def render_sidebar() -> dict:
     max_urls         = st.sidebar.number_input("Max URLs to process (0 = all)", min_value=0, value=50, step=10)
 
     st.sidebar.markdown("---")
+    st.sidebar.markdown("### Performance")
+    concurrent_workers = st.sidebar.slider(
+        "Concurrent URL workers",
+        min_value=1, max_value=8, value=3,
+        help="Process N URLs at the same time. Higher = faster but more API load. 3–5 recommended.",
+    )
+    st.sidebar.caption(
+        "Each worker runs SERP fetch → scrape (parallel) → AI in sequence. "
+        "Competitor scraping is always parallelised within each URL."
+    )
+
+    st.sidebar.markdown("---")
     st.sidebar.markdown("### Google Sheets Export *(optional)*")
     output_sheet_url     = st.sidebar.text_input("Output Sheet URL")
     service_account_json = st.sidebar.text_area("Service Account JSON", height=80)
@@ -139,6 +206,7 @@ def render_sidebar() -> dict:
         semrush_csv_url=semrush_csv_url, crawl_csv_url=crawl_csv_url, brand_csv_url=brand_csv_url,
         min_pos=int(min_pos), max_pos=int(max_pos), min_sv=int(min_sv),
         semrush_db=semrush_db, max_urls=int(max_urls),
+        concurrent_workers=int(concurrent_workers),
         output_sheet_url=output_sheet_url, service_account_json=service_account_json,
         run_audit=run_audit,
     )
@@ -316,148 +384,185 @@ def render_metrics(container, results: list):
             col.markdown(metric_card(label, val), unsafe_allow_html=True)
 
 
+# ── Per-URL worker (no st.* calls — safe to run in a thread) ─────────────────
+
+def _process_single_url(ug: dict, cfg: dict, brand_rules: dict, own_domain: str) -> dict:
+    """
+    Full pipeline for one URL: SERP fetch → parallel competitor scrape → AI.
+    Returns result_item dict. All exceptions are caught and logged internally.
+    """
+    primary_kw  = ug.get("primary_keyword", "")
+    log_lines: list[str] = []
+
+    # SERP fetch
+    raw_competitors: list[dict] = []
+    if cfg["semrush_key"] and primary_kw:
+        try:
+            raw_competitors = fetch_serp_competitors(
+                keyword=primary_kw, api_key=cfg["semrush_key"],
+                database=cfg["semrush_db"], limit=10,
+                own_domain=own_domain, top_n=3,
+            )
+            log_lines.append(f"SERP: {len(raw_competitors)} competitors")
+        except Exception as exc:
+            log_lines.append(f"SERP failed: {exc}")
+
+    # Scrape competitors — internally parallel (ThreadPoolExecutor per page)
+    competitors: list[dict] = []
+    if raw_competitors:
+        try:
+            competitors = scrape_competitors(raw_competitors)
+            ok     = sum(1 for c in competitors if not c.get("error") and c.get("title"))
+            failed = len(competitors) - ok
+            note   = f" ({failed} AI-only)" if failed else ""
+            log_lines.append(f"Scrape: {ok}/{len(competitors)}{note}")
+        except Exception as exc:
+            log_lines.append(f"Scrape failed: {exc}")
+
+    # AI recommendations
+    ai_result = None
+    if cfg["bifrost_key"]:
+        try:
+            ai_result = generate_recommendations_for_url(
+                url_group=ug,
+                competitors=competitors,
+                brand_rules=brand_rules,
+                api_key=cfg["bifrost_key"],
+                base_url=cfg["bifrost_base_url"],
+            )
+            if ai_result:
+                check = ai_result.get("protection_check", "")
+                flag  = " ⚠ PROTECT WARNING" if "WARNING" in str(check) else " ✓"
+                log_lines.append(f"AI{flag}")
+        except Exception as exc:
+            log_lines.append(f"AI failed: {exc}")
+
+    return {
+        "url_group":   ug,
+        "competitors": competitors,
+        "ai_result":   ai_result,
+        "_log":        log_lines,   # merged into main log by the pipeline
+    }
+
+
 # ── Audit pipeline ────────────────────────────────────────────────────────────
 
 def run_audit_pipeline(cfg: dict, status_ph, progress_ph, log_ph, metrics_ph, results_ph) -> list:
     logs: list[str] = []
 
     def log(msg: str):
-        logs.append(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] {msg}")
+        ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        logs.append(f"[{ts}] {msg}")
         log_ph.markdown(
-            '<div class="log-box">' + "<br>".join(logs[-40:]) + "</div>",
+            '<div class="log-box">' + "<br>".join(logs[-50:]) + "</div>",
             unsafe_allow_html=True,
         )
 
-    # Stage 1 — Load data
+    # ── Read uploaded file bytes once (avoids seek issues with cached loaders) ──
+    excel_bytes = None
+    if cfg.get("excel_file"):
+        cfg["excel_file"].seek(0)
+        excel_bytes = cfg["excel_file"].read()
+
+    semrush_url = cfg.get("semrush_csv_url") or None
+    crawl_url   = cfg.get("crawl_csv_url")   or None
+    brand_url   = cfg.get("brand_csv_url")   or None
+
+    # ── Stage 1 — Load data (cached after first run) ─────────────────────────
     status_ph.markdown("### Stage 1 — Loading data...")
     progress_ph.progress(5)
-    log("Loading Semrush data...")
 
+    log("Loading Semrush data (cached)...")
     try:
-        semrush_df = load_semrush_data(
-            sheet_url=cfg["semrush_csv_url"] or None,
-            excel_file=cfg["excel_file"],
-        )
-        log(f"✓ Semrush: {len(semrush_df)} keywords")
+        semrush_df = _load_semrush(excel_bytes, semrush_url)
+        log(f"✓ Semrush: {len(semrush_df):,} keywords")
     except Exception as exc:
         st.error(f"Failed to load Semrush data: {exc}")
         return []
 
-    log("Loading crawl data...")
+    log("Loading crawl data (cached)...")
     try:
-        crawl_df = load_crawl_data(
-            sheet_url=cfg["crawl_csv_url"] or None,
-            excel_file=cfg["excel_file"],
-        )
-        log(f"✓ Crawl: {len(crawl_df)} indexable pages")
+        crawl_df = _load_crawl(excel_bytes, crawl_url)
+        log(f"✓ Crawl: {len(crawl_df):,} indexable pages")
     except Exception as exc:
         st.error(f"Failed to load crawl data: {exc}")
         return []
 
-    log("Loading brand rules...")
-    try:
-        brand_rules = load_brand_rules(
-            sheet_url=cfg["brand_csv_url"] or None,
-            excel_file=cfg["excel_file"],
-        )
-        log(f"✓ Brand rules: {brand_rules['brand_name']}")
-    except Exception as exc:
-        st.warning(f"Brand rules not loaded ({exc}), using defaults.")
-        from modules.data_loader import _default_brand_rules
-        brand_rules = _default_brand_rules()
+    log("Loading brand rules (cached)...")
+    brand_rules = _load_brand_rules(excel_bytes, brand_url)
+    log(f"✓ Brand rules: {brand_rules['brand_name']}")
 
-    # Count PROTECTED keywords across dataset
-    protected_count = int((semrush_df["is_protected"] == True).sum()) if "is_protected" in semrush_df.columns else 0
-    log(f"✓ {protected_count} protected keywords identified (pos 1–3)")
+    protected_total = int((semrush_df.get("is_protected", False) == True).sum()) \
+        if "is_protected" in semrush_df.columns else 0
+    log(f"✓ {protected_total:,} protected keywords (pos 1–3)")
     progress_ph.progress(15)
 
-    # Stage 2 — Build URL groups
+    # ── Stage 2 — Build URL keyword map (cached) ──────────────────────────────
     status_ph.markdown("### Stage 2 — Building keyword map...")
-    log("Grouping keywords by URL (protected + striking)...")
-
-    url_groups = build_url_keyword_map(
-        semrush_df=semrush_df,
-        crawl_df=crawl_df,
-        min_sv=cfg["min_sv"],
-        min_pos=cfg["min_pos"],
-        max_pos=cfg["max_pos"],
-        brand_name=brand_rules.get("brand_name", ""),
-        max_urls=cfg["max_urls"],
-    )
+    log("Building keyword map (cached)...")
+    try:
+        import hashlib
+        _sh = hashlib.md5(excel_bytes or b"").hexdigest()[:8] if excel_bytes else (semrush_url or "")[:8]
+        _ch = hashlib.md5(excel_bytes or b"").hexdigest()[8:16] if excel_bytes else (crawl_url or "")[:8]
+        url_groups = _build_keyword_map(
+            _sh, _ch,
+            excel_bytes, excel_bytes,
+            semrush_url, crawl_url,
+            cfg["min_sv"], cfg["min_pos"], cfg["max_pos"],
+            brand_rules.get("brand_name", ""), cfg["max_urls"],
+        )
+    except Exception as exc:
+        st.error(f"Failed to build keyword map: {exc}")
+        return []
 
     if not url_groups:
         st.warning("No URLs found in striking distance range with current filters.")
         return []
 
     prot_urls = sum(1 for g in url_groups if g["protected_count"] > 0)
-    log(f"✓ {len(url_groups)} URLs to process ({prot_urls} have protected keywords)")
+    log(f"✓ {len(url_groups)} URLs to process ({prot_urls} with protected keywords)")
     progress_ph.progress(25)
 
     own_domain = extract_domain(url_groups[0]["url"]) if url_groups else ""
-    total = len(url_groups)
+    total      = len(url_groups)
+    workers    = min(cfg.get("concurrent_workers", 3), total)
 
     st.session_state.processed_results = []
+    completed = 0
 
-    for i, ug in enumerate(url_groups):
-        pct = 25 + int(70 * (i / total))
-        progress_ph.progress(pct)
-        primary_kw = ug["primary_keyword"]
+    status_ph.markdown(
+        f"### Stage 3 — Processing {total} URLs  ·  {workers} concurrent workers"
+    )
+    log(f"Starting {workers} concurrent workers...")
 
-        # SERP fetch
-        status_ph.markdown(f"### {i+1}/{total}: SERP fetch")
-        log(f"[{i+1}/{total}] '{primary_kw}' — {ug['url'].split('/')[-1] or ug['url']}")
-        if ug["protected_count"]:
-            log(f"  🛡 {ug['protected_count']} protected KWs on this page")
+    # ── Stage 3 — Concurrent URL processing ──────────────────────────────────
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_ug = {
+            executor.submit(_process_single_url, ug, cfg, brand_rules, own_domain): ug
+            for ug in url_groups
+        }
 
-        raw_competitors = []
-        if cfg["semrush_key"] and primary_kw:
+        for future in as_completed(future_to_ug):
+            completed += 1
+            pct = 25 + int(70 * completed / total)
+            progress_ph.progress(pct)
+
             try:
-                raw_competitors = fetch_serp_competitors(
-                    keyword=primary_kw, api_key=cfg["semrush_key"],
-                    database=cfg["semrush_db"], limit=10,
-                    own_domain=own_domain, top_n=3,
-                )
-                log(f"  ↳ {len(raw_competitors)} competitors")
+                result = future.result()
             except Exception as exc:
-                log(f"  ⚠ SERP: {exc}")
+                ug = future_to_ug[future]
+                log(f"⚠ Worker error for {ug['url'][-50:]}: {exc}")
+                result = {"url_group": ug, "competitors": [], "ai_result": None, "_log": []}
 
-        # Scrape competitors (best-effort; failures are passed to AI as URLs)
-        status_ph.markdown(f"### {i+1}/{total}: Scraping competitors")
-        competitors = []
-        if raw_competitors:
-            try:
-                competitors = scrape_competitors(raw_competitors)
-                ok    = sum(1 for c in competitors if not c.get("error") and c.get("title"))
-                failed = len(competitors) - ok
-                msg = f"  ↳ {ok}/{len(competitors)} scraped"
-                if failed:
-                    msg += f" — {failed} will be fetched by AI"
-                log(msg)
-            except Exception as exc:
-                log(f"  ⚠ Scrape: {exc}")
+            ug      = result["url_group"]
+            kw_slug = (ug.get("primary_keyword") or "")[:40]
+            url_end = ug["url"].split("/")[-1] or ug["url"][-30:]
+            details = " · ".join(result.get("_log", []))
+            prot    = f"🛡 {ug['protected_count']} " if ug.get("protected_count") else ""
+            log(f"[{completed}/{total}] {prot}'{kw_slug}' {url_end}  {details}")
 
-        # AI recommendations
-        status_ph.markdown(f"### {i+1}/{total}: AI recommendations")
-        ai_result = None
-        if cfg["bifrost_key"]:
-            try:
-                ai_result = generate_recommendations_for_url(
-                    url_group=ug,
-                    competitors=competitors,
-                    brand_rules=brand_rules,
-                    api_key=cfg["bifrost_key"],
-                    base_url=cfg["bifrost_base_url"],
-                )
-                if ai_result:
-                    check = ai_result.get("protection_check", "")
-                    flag  = " ⚠ PROTECTION WARNING" if "WARNING" in str(check) else ""
-                    log(f"  ↳ AI ✓{flag}")
-            except Exception as exc:
-                log(f"  ⚠ AI: {exc}")
-
-        result_item = {"url_group": ug, "competitors": competitors, "ai_result": ai_result}
-        st.session_state.processed_results.append(result_item)
-        render_metrics(metrics_ph, st.session_state.processed_results)
+            st.session_state.processed_results.append(result)
+            render_metrics(metrics_ph, st.session_state.processed_results)
 
     progress_ph.progress(100)
     return st.session_state.processed_results

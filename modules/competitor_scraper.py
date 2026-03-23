@@ -1,10 +1,12 @@
 """
 competitor_scraper.py
 Scrape competitor pages for title, meta description, H1, H2s, word count.
+Uses a ThreadPoolExecutor so all competitors for a URL are fetched in parallel.
 """
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import requests
@@ -22,7 +24,7 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
-REQUEST_TIMEOUT = 15  # seconds
+REQUEST_TIMEOUT = 12  # seconds per page
 
 
 def scrape_page(url: str) -> dict[str, Any]:
@@ -91,20 +93,27 @@ def scrape_page(url: str) -> dict[str, Any]:
     return result
 
 
-def scrape_competitors(competitor_list: list[dict]) -> list[dict]:
+def scrape_competitors(competitor_list: list[dict], max_workers: int = 5) -> list[dict]:
     """
-    Scrape each competitor dict (from serp_fetcher).
-    Returns merged list with scrape results added.
+    Scrape all competitor pages concurrently using a ThreadPoolExecutor.
+    Preserves original order. Returns merged list with scrape results added.
     """
-    enriched = []
-    for comp in competitor_list:
+    if not competitor_list:
+        return []
+
+    results: dict[int, dict] = {}
+
+    def _scrape(idx: int, comp: dict) -> tuple[int, dict]:
         url = comp.get("url", "")
         if not url:
-            enriched.append({**comp, "error": "No URL"})
-            continue
-
+            return idx, {**comp, "error": "No URL"}
         scrape_result = scrape_page(url)
-        merged = {**comp, **scrape_result}
-        enriched.append(merged)
+        return idx, {**comp, **scrape_result}
 
-    return enriched
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(competitor_list))) as pool:
+        futures = {pool.submit(_scrape, i, comp): i for i, comp in enumerate(competitor_list)}
+        for future in as_completed(futures):
+            idx, merged = future.result()
+            results[idx] = merged
+
+    return [results[i] for i in range(len(competitor_list))]
