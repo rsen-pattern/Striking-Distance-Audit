@@ -122,8 +122,51 @@ def _fetch_csv_url(url: str) -> pd.DataFrame:
 
 
 def _read_sheet_from_excel(excel_file, sheet_name: str) -> pd.DataFrame:
-    """Read a named sheet from an Excel file object or path."""
-    return pd.read_excel(excel_file, sheet_name=sheet_name, engine="openpyxl")
+    """
+    Read a named sheet from an Excel file object or path.
+
+    Screaming Frog exports save sheets as Excel Table objects.  openpyxl 3.1+
+    changed how it processes Table metadata and pandas 2.x can raise
+    "arg must be a list, tuple, 1-d array, or Series" when pd.read_excel
+    tries to build an Index from the Table's column descriptors.
+
+    We work around this by reading via openpyxl in read_only mode (which
+    skips all Table / formula / conditional-format metadata) and building
+    the DataFrame ourselves.  pd.read_excel is kept as a fallback.
+    """
+    import openpyxl
+
+    try:
+        # Seek to start in case the same BytesIO was partially read before
+        if hasattr(excel_file, "seek"):
+            excel_file.seek(0)
+
+        wb = openpyxl.load_workbook(excel_file, data_only=True, read_only=True)
+        if sheet_name not in wb.sheetnames:
+            wb.close()
+            raise ValueError(
+                f"Sheet '{sheet_name}' not found. "
+                f"Available sheets: {wb.sheetnames}"
+            )
+        ws = wb[sheet_name]
+        rows = list(ws.values)
+        wb.close()
+
+        if not rows:
+            return pd.DataFrame()
+
+        headers = [str(c) if c is not None else f"Unnamed_{i}"
+                   for i, c in enumerate(rows[0])]
+        return pd.DataFrame(rows[1:], columns=headers)
+
+    except Exception as primary_exc:
+        logger.warning(
+            "openpyxl read_only read failed (%s); falling back to pd.read_excel",
+            primary_exc,
+        )
+        if hasattr(excel_file, "seek"):
+            excel_file.seek(0)
+        return pd.read_excel(excel_file, sheet_name=sheet_name, engine="openpyxl")
 
 
 # ---------------------------------------------------------------------------
