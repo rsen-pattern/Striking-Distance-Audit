@@ -29,8 +29,11 @@ SEMRUSH_COL_MAP = {
     "difficulty": "kd",
     "url": "url",
     "traffic": "traffic",
+    "traffic (%)": "traffic_pct",
+    "cpc": "cpc",
     "keyword intents": "keyword_intents",
     "intent": "keyword_intents",
+    "position type": "position_type",
 }
 
 CRAWL_COL_MAP = {
@@ -129,6 +132,34 @@ def load_semrush_data(
 
     # Normalise URLs (strip trailing slash)
     df["url"] = df["url"].str.strip().str.rstrip("/")
+
+    # ── Derived columns ──────────────────────────────────────────────────────
+
+    def _bucket(pos):
+        if pos <= 3:    return "PROTECTED"
+        elif pos <= 5:  return "PRIME_STRIKING"
+        elif pos <= 10: return "PAGE1_STRIKING"
+        elif pos <= 20: return "PAGE2_STRIKING"
+        else:           return "DEEPER"
+
+    df["keyword_bucket"] = df["position"].apply(_bucket)
+
+    def _trend(row):
+        pp = row.get("prev_position")
+        if pd.isna(pp) or pp == 0:
+            return "new"
+        delta = pp - row["position"]   # positive = improved
+        if delta > 1:   return "rising"
+        if delta < -1:  return "declining"
+        return "stable"
+
+    df["trend"] = df.apply(_trend, axis=1)
+    df["delta"] = df.apply(
+        lambda r: round(r["prev_position"] - r["position"], 1)
+                  if pd.notna(r.get("prev_position")) else None,
+        axis=1,
+    )
+    df["is_protected"] = df["keyword_bucket"] == "PROTECTED"
 
     logger.info("Semrush data loaded: %d rows", len(df))
     return df.reset_index(drop=True)
