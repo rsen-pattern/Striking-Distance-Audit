@@ -97,9 +97,22 @@ BRAND_COL_MAP = {
 
 def _normalise_columns(df: pd.DataFrame, col_map: dict) -> pd.DataFrame:
     """Lower-case and strip column names, then rename using col_map."""
-    df.columns = [c.strip().lower() for c in df.columns]
-    rename = {k: v for k, v in col_map.items() if k in df.columns}
-    return df.rename(columns=rename)
+    # str() handles integer or NaN column names (e.g. blank Excel headers)
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    # De-duplicate: if two source columns map to the same target name,
+    # keep first match; suffix duplicates so they don't collide.
+    seen: dict[str, int] = {}
+    deduped = []
+    for c in df.columns:
+        target = col_map.get(c, c)
+        if target in seen:
+            deduped.append(f"{target}__{seen[target]}")
+            seen[target] += 1
+        else:
+            seen[target] = 1
+            deduped.append(target)
+    df.columns = deduped
+    return df
 
 
 def _fetch_csv_url(url: str) -> pd.DataFrame:
@@ -241,47 +254,56 @@ def load_crawl_data(
     else:
         raise ValueError("Provide either sheet_url or excel_file for crawl data.")
 
-    df = _normalise_columns(df, CRAWL_COL_MAP)
+    step = "normalise_columns"
+    try:
+        df = _normalise_columns(df, CRAWL_COL_MAP)
+        logger.debug("Crawl columns after normalise: %s", list(df.columns))
 
-    if "url" not in df.columns:
-        raise ValueError("Crawl data missing 'Address' column.")
+        if "url" not in df.columns:
+            raise ValueError(
+                f"Crawl data missing 'Address' column. "
+                f"Columns found: {list(df.columns)[:10]}"
+            )
 
-    # Filter to 200 + Indexable
-    # Force masks to plain numpy bool — pandas 2.x nullable dtypes (Int64, BooleanArray)
-    # raise "arg must be a list, tuple, 1-d array, or Series" when used directly as index.
-    if "status_code" in df.columns:
-        df["status_code"] = pd.to_numeric(df["status_code"], errors="coerce")
-        mask = (df["status_code"] == 200).fillna(False).astype(bool)
-        df = df[mask]
+        step = "filter_status_code"
+        if "status_code" in df.columns:
+            df["status_code"] = pd.to_numeric(df["status_code"], errors="coerce")
+            mask = df["status_code"].eq(200).fillna(False)
+            df = df.loc[mask].copy()
+        logger.debug("Crawl after status filter: %d rows", len(df))
 
-    if "indexability" in df.columns:
-        mask = (
-            df["indexability"].astype(str).str.strip().str.lower() == "indexable"
-        ).fillna(False).astype(bool)
-        df = df[mask]
+        step = "filter_indexability"
+        if "indexability" in df.columns:
+            idx_col = df["indexability"].astype(str).str.strip().str.lower()
+            df = df.loc[idx_col == "indexable"].copy()
+        logger.debug("Crawl after indexability filter: %d rows", len(df))
 
-    # Fill missing on-page columns
-    text_cols = [
-        "title", "meta_description", "h1",
-        "h2_1", "h2_2", "h2_3", "h3_1",
-        "page_copy",
-    ]
-    for col in text_cols:
-        if col not in df.columns:
-            df[col] = ""
-        else:
-            df[col] = df[col].fillna("").astype(str)
+        step = "fill_text_cols"
+        text_cols = [
+            "title", "meta_description", "h1",
+            "h2_1", "h2_2", "h2_3", "h3_1",
+            "page_copy",
+        ]
+        for col in text_cols:
+            if col not in df.columns:
+                df[col] = ""
+            else:
+                df[col] = df[col].fillna("").astype(str)
 
-    numeric_cols = ["word_count", "readability", "sentence_count"]
-    for col in numeric_cols:
-        if col not in df.columns:
-            df[col] = float("nan")
-        else:
-            df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
+        step = "fill_numeric_cols"
+        numeric_cols = ["word_count", "readability", "sentence_count"]
+        for col in numeric_cols:
+            if col not in df.columns:
+                df[col] = pd.NA
+            else:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df["url"] = df["url"].astype(str).str.strip().str.rstrip("/")
-    df = df.dropna(subset=["url"])
-    df = df[df["url"].str.len() > 0]
+        step = "normalise_url"
+        df["url"] = df["url"].astype(str).str.strip().str.rstrip("/")
+        df = df[df["url"].str.len() > 0].copy()
+
+    except Exception as exc:
+        raise RuntimeError(f"[step={step}] {exc}") from exc
 
     logger.info("Crawl data loaded: %d indexable rows", len(df))
     return df.reset_index(drop=True)

@@ -485,7 +485,11 @@ def run_audit_pipeline(cfg: dict, status_ph, progress_ph, log_ph, metrics_ph, re
         crawl_df = _load_crawl(excel_bytes, crawl_url)
         log(f"✓ Crawl: {len(crawl_df):,} indexable pages")
     except Exception as exc:
+        import traceback
+        tb = traceback.format_exc()
         st.error(f"Failed to load crawl data: {exc}")
+        st.expander("Full traceback (share with support)").code(tb)
+        logger.error("Crawl load failed:\n%s", tb)
         return []
 
     log("Loading brand rules (cached)...")
