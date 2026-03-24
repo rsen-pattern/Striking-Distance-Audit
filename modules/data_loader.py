@@ -207,10 +207,14 @@ def load_semrush_data(
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Fill prev_position with position if absent (treat as stable)
+    # Track which rows had prev_position data vs. which were missing
     if "prev_position" not in df.columns:
-        df["prev_position"] = df["position"]
+        df["prev_position"] = pd.NA
+        df["_prev_position_missing"] = True
     else:
+        df["_prev_position_missing"] = df["prev_position"].isna()
+        # Fill missing prev_position with current position for delta calc,
+        # but _prev_position_missing flag preserves the truth for trend logic
         df["prev_position"] = df["prev_position"].fillna(df["position"])
 
     if "kd" not in df.columns:
@@ -265,6 +269,10 @@ def load_semrush_data(
         sv_trend = row.get("trend_from_sv")
         if sv_trend:
             return sv_trend
+        # If prev_position was missing from the data, flag as unknown
+        # rather than silently assuming stability
+        if row.get("_prev_position_missing", False):
+            return "unknown"
         pp = row.get("prev_position")
         if pd.isna(pp) or pp == 0:
             return "new"

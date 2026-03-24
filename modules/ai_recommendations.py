@@ -13,6 +13,7 @@ Competitor intelligence strategy:
 import json
 import logging
 import re
+import time
 from typing import Any
 
 from openai import OpenAI
@@ -24,6 +25,8 @@ AI_MODEL = "openai/gpt-4o-mini"
 TEMPERATURE = 0.3
 MAX_TOKENS = 2000          # increased to accommodate richer protected-KW logic
 MAX_KEYWORDS_IN_PROMPT = 25
+AI_MAX_RETRIES = 2         # 2 retries = 3 total attempts
+AI_RETRY_BACKOFF = 3.0     # seconds
 
 BUCKET_LABELS = {
     "PRIME_STRIKING": "pos 4–5 (one push from top 3)",
@@ -403,22 +406,32 @@ def generate_recommendations_for_url(
     system_prompt = _build_system_prompt(brand_rules)
     user_prompt   = _build_user_prompt(url_group, competitors)
 
-    try:
-        response = client.chat.completions.create(
-            model=AI_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_prompt},
-            ],
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-            timeout=90,   # seconds — prevents indefinite hangs on Bifrost
-        )
-    except Exception as exc:
-        logger.warning("AI API call failed for %s: %s", url_group["url"], exc)
+    raw = None
+    for attempt in range(1 + AI_MAX_RETRIES):
+        try:
+            response = client.chat.completions.create(
+                model=AI_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_prompt},
+                ],
+                temperature=TEMPERATURE,
+                max_tokens=MAX_TOKENS,
+                timeout=90,
+            )
+            raw = response.choices[0].message.content or ""
+            break
+        except Exception as exc:
+            logger.warning(
+                "AI API call failed for %s (attempt %d/%d): %s",
+                url_group["url"], attempt + 1, 1 + AI_MAX_RETRIES, exc,
+            )
+            if attempt < AI_MAX_RETRIES:
+                time.sleep(AI_RETRY_BACKOFF * (attempt + 1))
+
+    if raw is None:
         return None
 
-    raw    = response.choices[0].message.content or ""
     parsed = _parse_ai_response(raw)
 
     if parsed is None:

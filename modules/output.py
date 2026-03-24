@@ -1,6 +1,10 @@
 """
 output.py
 Build output DataFrame, export to Excel/CSV, optionally write to Google Sheets.
+
+Excel styling uses Pattern brand colours:
+  Primary   : #009bff  #fcfcfc  #090a0f
+  Secondary : #770bff  #4cc3ae  #00084d  #b3b3b3
 """
 
 import io
@@ -12,10 +16,10 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Columns highlighted green in Excel export (AI recommendations)
+# Columns highlighted in Excel export (AI recommendations)
 HIGHLIGHT_COLS = ["recommended_title", "recommended_meta", "recommended_h1", "ai_rationale"]
 
-# Columns highlighted amber for protection warnings
+# Columns highlighted for protection warnings
 PROTECTION_WARNING_COLS = ["protection_check"]
 
 COL_WIDTHS = {
@@ -52,8 +56,17 @@ COL_WIDTHS = {
     "comp3_url":             45,
     "comp3_title":           50,
     "comp3_meta":            60,
+    "scrape_success":        14,
     "run_timestamp":         22,
 }
+
+
+def _format_replacements(replacement_dict: dict) -> str:
+    """Format replacement suggestions as clean readable lines instead of raw dict."""
+    if not replacement_dict:
+        return ""
+    lines = [f"{kw} → {repl}" for kw, repl in replacement_dict.items()]
+    return " | ".join(lines)
 
 
 def build_output_dataframe(processed_results: list[dict[str, Any]]) -> pd.DataFrame:
@@ -82,6 +95,11 @@ def build_output_dataframe(processed_results: list[dict[str, Any]]) -> pd.DataFr
             if d.get("decision") == "REPLACE" and d.get("replacement_keyword")
         }
 
+        # Scrape success metric
+        scrape_ok   = sum(1 for c in comps if not c.get("error") and c.get("title"))
+        scrape_total = len(comps)
+        scrape_pct  = f"{scrape_ok}/{scrape_total}" if scrape_total else "N/A"
+
         def comp_field(idx: int, field: str) -> str:
             if idx < len(comps):
                 return str(comps[idx].get(field, "") or "")
@@ -96,7 +114,7 @@ def build_output_dataframe(processed_results: list[dict[str, Any]]) -> pd.DataFr
             "protected_count":       ug.get("protected_count", len(protected)),
             "optimise_count":        ug.get("optimise_count", len(optimise_kws)),
             "replace_count":         ug.get("replace_count", len(replace_kws)),
-            # Current on-page (new field names)
+            # Current on-page
             "current_title":         ug.get("current_title", ""),
             "current_meta":          ug.get("current_meta", ""),
             "current_h1":            ug.get("current_h1", ""),
@@ -112,7 +130,7 @@ def build_output_dataframe(processed_results: list[dict[str, Any]]) -> pd.DataFr
             # Keyword lists
             "keywords_to_optimise":  ", ".join(optimise_kws),
             "keywords_to_replace":   ", ".join(replace_kws),
-            "replacement_suggestions": str(replacement_suggestions) if replacement_suggestions else "",
+            "replacement_suggestions": _format_replacements(replacement_suggestions),
             # On-page content signals
             "word_count":            ug.get("word_count") or "",
             "readability":           ug.get("readability") or "",
@@ -127,6 +145,8 @@ def build_output_dataframe(processed_results: list[dict[str, Any]]) -> pd.DataFr
             "comp3_url":   comp_field(2, "url"),
             "comp3_title": comp_field(2, "title"),
             "comp3_meta":  comp_field(2, "meta_description"),
+            # Metadata
+            "scrape_success": scrape_pct,
             "run_timestamp": run_ts,
         }
         rows.append(row)
@@ -145,21 +165,32 @@ def to_excel_bytes(df: pd.DataFrame) -> bytes:
         wb  = writer.book
         ws  = writer.sheets["Audit Results"]
 
+        # ── Pattern brand colours ────────────────────────────────────────
         header_fmt = wb.add_format({
-            "bold": True, "bg_color": "#1a1a1f", "font_color": "#c8ff6e",
-            "border": 1, "border_color": "#2a2a30", "text_wrap": True,
+            "bold": True,
+            "bg_color": "#00084d",      # Secondary dark navy
+            "font_color": "#009bff",    # Primary blue
+            "border": 1,
+            "border_color": "#1e2133",
+            "text_wrap": True,
         })
         highlight_fmt = wb.add_format({
-            "bg_color": "#1a3a1a", "font_color": "#e8e6e0",
-            "text_wrap": True, "valign": "top",
+            "bg_color": "#062e27",      # Dark teal (optimise surface)
+            "font_color": "#fcfcfc",    # Primary white
+            "text_wrap": True,
+            "valign": "top",
         })
         warning_fmt = wb.add_format({
-            "bg_color": "#3a2a00", "font_color": "#ffcc44",
-            "text_wrap": True, "valign": "top",
+            "bg_color": "#2d0a10",      # Dark red (replace surface)
+            "font_color": "#f56969",    # Chart red
+            "text_wrap": True,
+            "valign": "top",
         })
         normal_fmt = wb.add_format({
-            "bg_color": "#1a1a1f", "font_color": "#e8e6e0",
-            "text_wrap": True, "valign": "top",
+            "bg_color": "#0f1119",      # Dark surface
+            "font_color": "#fcfcfc",    # Primary white
+            "text_wrap": True,
+            "valign": "top",
         })
 
         col_names = list(df.columns)

@@ -73,16 +73,34 @@ REPLACE_SV_THRESHOLD = 200
 def assign_keyword_decision(row: pd.Series, sv_threshold: int = REPLACE_SV_THRESHOLD) -> str:
     """
     Returns 'OPTIMISE' | 'REPLACE' | 'MONITOR'.
-    Uses health_status (trend) + position + SV.
+
+    Decision matrix considers position, SV, and trend together:
+      OPTIMISE — keyword is worth investing in:
+        - Rising trend (regardless of SV/position)
+        - Page 1 (pos ≤ 10) AND SV ≥ threshold
+        - Prime striking (pos 4–5) AND SV ≥ 100 (very close to top 3)
+      REPLACE — keyword is losing ground with low SV:
+        - Declining AND SV < threshold AND pos > 10
+      MONITOR — hold position, not worth major effort:
+        - Everything else (stable, unknown, or declining on page 1)
     """
     health   = row.get("health_status") or row.get("trend", "stable")
     position = float(row.get("position", 15))
     sv       = float(row.get("search_volume", 0))
 
-    if health == "rising" or (position <= 10 and sv >= sv_threshold):
+    # Rising keywords are always worth optimising
+    if health == "rising":
         return "OPTIMISE"
-    if health == "declining" and sv < sv_threshold:
+    # Page 1 with decent SV — optimise
+    if position <= 10 and sv >= sv_threshold:
+        return "OPTIMISE"
+    # Prime striking (pos 4–5) with any meaningful SV — optimise (one push from top 3)
+    if position <= 5 and sv >= 100:
+        return "OPTIMISE"
+    # Declining on page 2 with low SV — replace
+    if health == "declining" and sv < sv_threshold and position > 10:
         return "REPLACE"
+    # Declining on page 1 — still monitor (don't throw away a page 1 ranking)
     return "MONITOR"
 
 
@@ -196,6 +214,14 @@ def build_url_keyword_map(
         # (protected_kw_set penalty ensures a top-3 KW never wins primary selection)
         primary = striking_records[0] if striking_records else None
 
+        # Guard: if primary is None after filtering, skip this URL
+        if primary is None or not primary.get("keyword"):
+            continue
+
+        # Also identify the highest-SV striking keyword (for dual SERP fetch)
+        sv_sorted = sorted(striking_records, key=lambda r: r.get("search_volume", 0), reverse=True)
+        highest_sv_kw = sv_sorted[0] if sv_sorted else None
+
         # Crawl data for this URL
         on_page = crawl_lookup.get(str(url), {})
 
@@ -212,9 +238,12 @@ def build_url_keyword_map(
 
         groups.append({
             "url":                url,
-            "primary_keyword":    primary["keyword"]         if primary else None,
-            "primary_kw_position":primary["position"]        if primary else None,
-            "primary_kw_sv":      primary.get("search_volume", 0) if primary else 0,
+            "primary_keyword":    primary["keyword"],
+            "primary_kw_position":primary["position"],
+            "primary_kw_sv":      primary.get("search_volume", 0),
+            # Highest-SV keyword (may differ from primary) for dual SERP fetch
+            "highest_sv_keyword": highest_sv_kw.get("keyword") if highest_sv_kw else None,
+            "highest_sv_kw_sv":   highest_sv_kw.get("search_volume", 0) if highest_sv_kw else 0,
             "protected_keywords": protected_df.to_dict("records"),
             "striking_keywords":  striking_records,
             "kw_count":           len(striking_records),

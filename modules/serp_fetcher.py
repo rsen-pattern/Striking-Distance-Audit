@@ -1,10 +1,14 @@
 """
 serp_fetcher.py
 Fetch top competitor URLs from Semrush phrase_organic endpoint.
-One call per URL group (primary keyword only).
+Supports fetching for multiple keywords per URL group (primary + highest-SV).
+
+Thread-safe rate-limiting via threading.Lock so concurrent workers
+don't bypass the Semrush API interval.
 """
 
 import logging
+import threading
 import time
 from urllib.parse import quote_plus, urlparse
 
@@ -13,24 +17,51 @@ import requests
 logger = logging.getLogger(__name__)
 
 SEMRUSH_API_BASE = "https://api.semrush.com/"
+
+# ── Thread-safe rate limiter ──────────────────────────────────────────────────
+
+_rate_lock = threading.Lock()
 _last_request_time: float = 0.0
 
 
 def _rate_limit(min_interval: float = 1.0) -> None:
-    """Enforce minimum interval between Semrush API calls."""
+    """Enforce minimum interval between Semrush API calls (thread-safe)."""
     global _last_request_time
-    elapsed = time.time() - _last_request_time
-    if elapsed < min_interval:
-        time.sleep(min_interval - elapsed)
-    _last_request_time = time.time()
+    with _rate_lock:
+        elapsed = time.time() - _last_request_time
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+        _last_request_time = time.time()
 
+
+# ── Domain helpers ────────────────────────────────────────────────────────────
 
 def _extract_domain(url: str) -> str:
+    """Extract bare domain (without www.) from URL using urlparse."""
     try:
-        return urlparse(url).netloc.lower().lstrip("www.")
+        netloc = urlparse(url).netloc.lower()
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+        return netloc
     except Exception:
         return ""
 
+
+def _is_own_domain(domain: str, own_domain: str) -> bool:
+    """
+    True if domain belongs to the site owner.
+    Uses proper domain comparison — not substring match — to avoid
+    filtering 'workshop.com' when own_domain is 'shop'.
+    """
+    if not own_domain:
+        return False
+    d = domain.lower().lstrip("www.")
+    o = own_domain.lower().lstrip("www.")
+    # Exact match or subdomain match (e.g. 'au.shop.com' ends with '.shop.com')
+    return d == o or d.endswith("." + o)
+
+
+# ── SERP fetch ────────────────────────────────────────────────────────────────
 
 def fetch_serp_competitors(
     keyword: str,
@@ -46,8 +77,9 @@ def fetch_serp_competitors(
       {position, url, domain, title}
     Excludes own_domain. Returns [] on any error.
     """
-    if not api_key:
-        logger.warning("No Semrush API key provided — skipping SERP fetch.")
+    if not api_key or not keyword:
+        if not api_key:
+            logger.warning("No Semrush API key provided — skipping SERP fetch.")
         return []
 
     _rate_limit()
@@ -80,6 +112,45 @@ def fetch_serp_competitors(
     return results
 
 
+def fetch_serp_multi_keyword(
+    keywords: list[dict],
+    api_key: str,
+    database: str = "us",
+    own_domain: str = "",
+    top_n: int = 3,
+) -> list[dict]:
+    """
+    Fetch SERP competitors for multiple keywords, de-duplicate by domain,
+    and return up to top_n unique competitors.
+
+    keywords: list of {"keyword": str, "search_volume": int} dicts,
+              ordered by priority (highest-priority first).
+    """
+    seen_domains: set[str] = set()
+    combined: list[dict] = []
+
+    for kw_info in keywords:
+        kw = kw_info.get("keyword", "")
+        if not kw:
+            continue
+        comps = fetch_serp_competitors(
+            keyword=kw, api_key=api_key, database=database,
+            own_domain=own_domain, top_n=top_n * 2,  # over-fetch to allow dedup
+        )
+        for c in comps:
+            d = c.get("domain", "").lower()
+            if d not in seen_domains:
+                seen_domains.add(d)
+                c["source_keyword"] = kw
+                combined.append(c)
+            if len(combined) >= top_n:
+                break
+        if len(combined) >= top_n:
+            break
+
+    return combined[:top_n]
+
+
 def _parse_semrush_csv(text: str, own_domain: str, top_n: int) -> list[dict]:
     """Parse Semrush CSV response lines into competitor dicts."""
     lines = text.splitlines()
@@ -98,11 +169,13 @@ def _parse_semrush_csv(text: str, own_domain: str, top_n: int) -> list[dict]:
             continue
 
         url = parts[1].strip()
-        domain = parts[2].strip().lstrip("www.")
+        domain = parts[2].strip()
+        if domain.startswith("www."):
+            domain = domain[4:]
         title = parts[3].strip() if len(parts) > 3 else ""
 
-        # Exclude own domain
-        if own_domain and (own_domain in domain or domain in own_domain):
+        # Exclude own domain (proper domain comparison)
+        if _is_own_domain(domain, own_domain):
             continue
 
         competitors.append({

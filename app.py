@@ -6,6 +6,7 @@ Streamlit entrypoint — run with: streamlit run app.py
 import io
 import logging
 import sys
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
@@ -14,7 +15,7 @@ import streamlit as st
 
 from modules.data_loader import extract_domain, load_brand_rules, load_crawl_data, load_semrush_data
 from modules.keyword_analysis import build_url_keyword_map
-from modules.serp_fetcher import fetch_serp_competitors
+from modules.serp_fetcher import fetch_serp_competitors, fetch_serp_multi_keyword
 from modules.competitor_scraper import scrape_competitors
 from modules.ai_recommendations import generate_recommendations_for_url
 from modules.output import build_output_dataframe, to_excel_bytes, export_to_gsheet
@@ -557,24 +558,41 @@ def _process_single_url(ug: dict, cfg: dict, brand_rules: dict, own_domain: str)
     """
     Full pipeline for one URL: SERP fetch → parallel competitor scrape → AI.
     Returns result_item dict. All exceptions are caught and logged internally.
+
+    Uses dual-keyword SERP fetch when the highest-SV keyword differs from the
+    primary keyword — gives the AI richer competitor context.
     """
-    primary_kw  = ug.get("primary_keyword", "")
+    primary_kw     = ug.get("primary_keyword") or ""
+    highest_sv_kw  = ug.get("highest_sv_keyword") or ""
     log_lines: list[str] = []
 
-    # SERP fetch
+    # ── SERP fetch (dual-keyword when keywords differ) ────────────────────
     raw_competitors: list[dict] = []
     if cfg["semrush_key"] and primary_kw:
         try:
-            raw_competitors = fetch_serp_competitors(
-                keyword=primary_kw, api_key=cfg["semrush_key"],
-                database=cfg["semrush_db"], limit=10,
-                own_domain=own_domain, top_n=3,
-            )
-            log_lines.append(f"SERP: {len(raw_competitors)} competitors")
+            # Build keyword list for multi-keyword fetch
+            kw_list = [{"keyword": primary_kw, "search_volume": ug.get("primary_kw_sv", 0)}]
+            if highest_sv_kw and highest_sv_kw.lower() != primary_kw.lower():
+                kw_list.append({"keyword": highest_sv_kw, "search_volume": ug.get("highest_sv_kw_sv", 0)})
+
+            if len(kw_list) > 1:
+                raw_competitors = fetch_serp_multi_keyword(
+                    keywords=kw_list, api_key=cfg["semrush_key"],
+                    database=cfg["semrush_db"],
+                    own_domain=own_domain, top_n=3,
+                )
+                log_lines.append(f"SERP (2 KWs): {len(raw_competitors)} competitors")
+            else:
+                raw_competitors = fetch_serp_competitors(
+                    keyword=primary_kw, api_key=cfg["semrush_key"],
+                    database=cfg["semrush_db"], limit=10,
+                    own_domain=own_domain, top_n=3,
+                )
+                log_lines.append(f"SERP: {len(raw_competitors)} competitors")
         except Exception as exc:
             log_lines.append(f"SERP failed: {exc}")
 
-    # Scrape competitors — internally parallel (ThreadPoolExecutor per page)
+    # ── Scrape competitors (internally parallel) ──────────────────────────
     competitors: list[dict] = []
     if raw_competitors:
         try:
@@ -586,7 +604,7 @@ def _process_single_url(ug: dict, cfg: dict, brand_rules: dict, own_domain: str)
         except Exception as exc:
             log_lines.append(f"Scrape failed: {exc}")
 
-    # AI recommendations
+    # ── AI recommendations ────────────────────────────────────────────────
     ai_result = None
     if cfg["bifrost_key"]:
         try:
@@ -608,20 +626,22 @@ def _process_single_url(ug: dict, cfg: dict, brand_rules: dict, own_domain: str)
         "url_group":   ug,
         "competitors": competitors,
         "ai_result":   ai_result,
-        "_log":        log_lines,   # merged into main log by the pipeline
+        "_log":        log_lines,
     }
 
 
 # ── Audit pipeline ────────────────────────────────────────────────────────────
 
 def run_audit_pipeline(cfg: dict, status_ph, progress_ph, log_ph, metrics_ph, results_ph) -> list:
-    logs: list[str] = []
+    logs: deque[str] = deque(maxlen=200)  # capped to prevent unbounded memory growth
 
     def log(msg: str):
         ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
         logs.append(f"[{ts}] {msg}")
+        # Show last 50 in the UI
+        visible = list(logs)[-50:]
         log_ph.markdown(
-            '<div class="log-box">' + "<br>".join(logs[-50:]) + "</div>",
+            '<div class="log-box">' + "<br>".join(visible) + "</div>",
             unsafe_allow_html=True,
         )
 
@@ -673,8 +693,8 @@ def run_audit_pipeline(cfg: dict, status_ph, progress_ph, log_ph, metrics_ph, re
     log("Building keyword map (cached)...")
     try:
         import hashlib
-        _sh = hashlib.md5(excel_bytes or b"").hexdigest()[:8] if excel_bytes else (semrush_url or "")[:8]
-        _ch = hashlib.md5(excel_bytes or b"").hexdigest()[8:16] if excel_bytes else (crawl_url or "")[:8]
+        _sh = hashlib.md5(excel_bytes or b"").hexdigest() if excel_bytes else hashlib.md5((semrush_url or "").encode()).hexdigest()
+        _ch = hashlib.md5((excel_bytes or b"") + b"crawl").hexdigest() if excel_bytes else hashlib.md5((crawl_url or "").encode()).hexdigest()
         url_groups = _build_keyword_map(
             _sh, _ch,
             excel_bytes, excel_bytes,
@@ -694,6 +714,21 @@ def run_audit_pipeline(cfg: dict, status_ph, progress_ph, log_ph, metrics_ph, re
 
     prot_urls = sum(1 for g in url_groups if g["protected_count"] > 0)
     log(f"✓ {len(url_groups)} URLs to process ({prot_urls} with protected keywords)")
+
+    # ── URL overlap check: Semrush vs crawl ────────────────────────────────
+    semrush_urls = set(semrush_df["url"].astype(str).str.strip().str.rstrip("/").unique())
+    crawl_urls   = set(crawl_df["url"].astype(str).str.strip().str.rstrip("/").unique())
+    overlap      = semrush_urls & crawl_urls
+    if semrush_urls:
+        overlap_pct = len(overlap) / len(semrush_urls) * 100
+        log(f"URL overlap: {len(overlap)}/{len(semrush_urls)} Semrush URLs found in crawl ({overlap_pct:.0f}%)")
+        if overlap_pct < 50:
+            st.warning(
+                f"⚠ Only {overlap_pct:.0f}% of Semrush URLs match the crawl data. "
+                "On-page data (title, meta, H1) will be missing for unmatched URLs. "
+                "Check that both data sources cover the same domain."
+            )
+
     progress_ph.progress(25)
 
     own_domain = extract_domain(url_groups[0]["url"]) if url_groups else ""
@@ -709,6 +744,18 @@ def run_audit_pipeline(cfg: dict, status_ph, progress_ph, log_ph, metrics_ph, re
     log(f"Starting {workers} concurrent workers...")
 
     # ── Stage 3 — Concurrent URL processing ──────────────────────────────────
+    # Cap total threads: each worker can spawn up to 5 sub-threads for scraping
+    # so keep main pool modest to avoid thread exhaustion.
+    max_total_threads = 20
+    effective_workers = min(workers, max(1, max_total_threads // 5))
+    if effective_workers < workers:
+        log(f"Thread cap: reduced workers {workers} → {effective_workers} "
+            f"(max {max_total_threads} total threads)")
+        workers = effective_workers
+
+    total_scrape_ok = 0
+    total_scrape_count = 0
+
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_ug = {
             executor.submit(_process_single_url, ug, cfg, brand_rules, own_domain): ug
@@ -727,6 +774,11 @@ def run_audit_pipeline(cfg: dict, status_ph, progress_ph, log_ph, metrics_ph, re
                 log(f"⚠ Worker error for {ug['url'][-50:]}: {exc}")
                 result = {"url_group": ug, "competitors": [], "ai_result": None, "_log": []}
 
+            # Track scrape success across all URLs
+            comps = result.get("competitors", [])
+            total_scrape_count += len(comps)
+            total_scrape_ok    += sum(1 for c in comps if not c.get("error") and c.get("title"))
+
             ug      = result["url_group"]
             kw_slug = (ug.get("primary_keyword") or "")[:40]
             url_end = ug["url"].split("/")[-1] or ug["url"][-30:]
@@ -736,6 +788,17 @@ def run_audit_pipeline(cfg: dict, status_ph, progress_ph, log_ph, metrics_ph, re
 
             st.session_state.processed_results.append(result)
             render_metrics(metrics_ph, st.session_state.processed_results)
+
+    # ── Scrape success summary ────────────────────────────────────────────
+    if total_scrape_count:
+        scrape_pct = total_scrape_ok / total_scrape_count * 100
+        log(f"Scrape success: {total_scrape_ok}/{total_scrape_count} ({scrape_pct:.0f}%)")
+        if scrape_pct < 50:
+            st.warning(
+                f"⚠ Only {scrape_pct:.0f}% of competitor pages were scraped successfully. "
+                "AI recommendations may be weaker due to limited competitor data. "
+                "Common cause: sites blocking automated requests (403 errors)."
+            )
 
     progress_ph.progress(100)
     return st.session_state.processed_results

@@ -2,10 +2,13 @@
 competitor_scraper.py
 Scrape competitor pages for title, meta description, H1, H2s, word count.
 Uses a ThreadPoolExecutor so all competitors for a URL are fetched in parallel.
+
+Includes retry with exponential backoff for transient network failures.
 """
 
 import logging
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
@@ -25,11 +28,13 @@ HEADERS = {
 }
 
 REQUEST_TIMEOUT = 12  # seconds per page
+MAX_RETRIES = 1       # 1 retry = 2 total attempts
+RETRY_BACKOFF = 2.0   # seconds before retry
 
 
 def scrape_page(url: str) -> dict[str, Any]:
     """
-    Fetch and parse a single page.
+    Fetch and parse a single page with retry on transient failures.
     Returns dict:
       title, meta_description, h1, h2s (list, max 10), h3s (list, max 5),
       word_count, canonical, error (str or None)
@@ -46,12 +51,27 @@ def scrape_page(url: str) -> dict[str, Any]:
         "error": None,
     }
 
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        result["error"] = str(exc)
-        logger.warning("Scrape failed for %s: %s", url, exc)
+    resp = None
+    last_exc = None
+
+    for attempt in range(1 + MAX_RETRIES):
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+            resp.raise_for_status()
+            last_exc = None
+            break
+        except requests.RequestException as exc:
+            last_exc = exc
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            # Don't retry client errors (403, 404, etc.) — only transient/server errors
+            if status and 400 <= status < 500:
+                break
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_BACKOFF * (attempt + 1))
+
+    if last_exc or resp is None:
+        result["error"] = str(last_exc or "No response")
+        logger.warning("Scrape failed for %s: %s", url, last_exc)
         return result
 
     try:
@@ -63,8 +83,10 @@ def scrape_page(url: str) -> dict[str, Any]:
     title_tag = soup.find("title")
     result["title"] = title_tag.get_text(strip=True) if title_tag else ""
 
-    # Meta description
+    # Meta description — check both name="description" and property="og:description"
     meta_tag = soup.find("meta", attrs={"name": re.compile(r"^description$", re.I)})
+    if not meta_tag:
+        meta_tag = soup.find("meta", attrs={"property": re.compile(r"^og:description$", re.I)})
     if meta_tag:
         result["meta_description"] = meta_tag.get("content", "").strip()
 
@@ -86,8 +108,11 @@ def scrape_page(url: str) -> dict[str, Any]:
     # Word count (body text)
     body = soup.find("body")
     if body:
+        # Remove script/style tags before counting
+        for tag in body.find_all(["script", "style", "nav", "footer"]):
+            tag.decompose()
         text = body.get_text(separator=" ")
-        words = [w for w in text.split() if w.strip()]
+        words = [w for w in text.split() if len(w) > 1]
         result["word_count"] = len(words)
 
     return result
