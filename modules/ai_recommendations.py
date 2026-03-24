@@ -45,6 +45,10 @@ def _build_system_prompt(brand_rules: dict) -> str:
         if title_suffix
         else "No fixed title suffix required."
     )
+    competitor_brand_note = (
+        f'\nCOMPETITOR BRANDS — NEVER use these in recommendations: {br["competitor_brands"]}'
+        if br.get("competitor_brands") else ""
+    )
     return f"""You are a senior SEO copywriter working for {br.get('brand_name', 'the brand')}.
 
 BRAND VOICE: {br.get('tone_style', 'Professional and clear.')}
@@ -53,12 +57,15 @@ TITLE SUFFIX: {suffix_instruction}
 CAPITALISATION: {br.get('capitalisation', 'Title Case for titles, Sentence case for metas.')}
 FORBIDDEN TERMS (never use): {br.get('forbidden_terms', 'none')}
 PREFERRED VOCABULARY: {br.get('preferred_vocabulary', 'none specified')}
-OFFER PHRASES: {br.get('offer_phrases_allowed', 'Yes')}
+OFFER PHRASES: {br.get('offer_phrases_allowed', 'Yes')}{competitor_brand_note}
 
 META DESCRIPTION RULES:
-- Maximum {br.get('meta_length_cap', 160)} characters including spaces
+- Target 145–155 characters. Absolute minimum 140 characters. Hard cap {br.get('meta_length_cap', 160)} characters.
+- Count every character including spaces before submitting.
+- If your draft is under 140 characters, expand it — add a benefit, a category breadth
+  reference, or a brand call-to-action until it reaches 145–155 characters.
 - Sentence case. No ellipsis. No exclamation marks.
-- Must include primary keyword naturally.
+- Must weave in the primary keyword and at least one secondary striking-distance keyword.
 
 TITLE TAG RULES:
 - Primary keyword near start. Apply title suffix.
@@ -67,10 +74,32 @@ TITLE TAG RULES:
 H1 RULES:
 - Title Case. Contains primary keyword. Different from title tag. Max 70 chars.
 
+PAGE SCOPE RULE (critical):
+- The current title and URL define the BREADTH of the page. Do not narrow a broad
+  category page by adding a specific fabric, colour, or product sub-type as the sole
+  focus unless the data strongly justifies it (i.e. the narrower keyword has ≥3×
+  the SV of the current primary keyword).
+- Example: a "Womens Cardigans" page should remain a cardigans page, not become a
+  "Womens Cashmere Cardigans" page just because cashmere cardigans has a closer
+  striking-distance position.
+- A striking-distance keyword with a specific attribute (e.g. cashmere, navy, frill)
+  should appear as a secondary term in the meta description, NOT replace the broader
+  page-level keyword in the title/H1.
+
+KEYWORD WORD-ORDER RULE:
+- Do not reorder keyword phrases purely to match a search query variant.
+  Google treats "womens smart casual" and "smart casual womens" as equivalent.
+  Only change word order if it materially improves natural English readability.
+
 PROTECTED KEYWORD RULE (critical):
 - If the page has existing top-3 keywords, the recommended title and H1 MUST
   preserve the highest-SV protected keyword. Never remove a top-3 keyword from
   the title — it represents an established ranking you must not destroy.
+
+SV BALANCE RULE:
+- If the highest-opportunity striking keyword has SV < 500, you MUST also feature
+  the highest-SV striking keyword (SV ≥ 500, if one exists) prominently in the
+  title or H1 — do not sacrifice high-volume rankings for marginal proximity gains.
 
 OUTPUT: Return ONLY valid JSON. No markdown fences. No preamble."""
 
@@ -178,6 +207,20 @@ You have full flexibility to choose the primary keyword from the striking distan
         )
     kw_block = "\n".join(kw_lines) if kw_lines else "  No striking distance keywords."
 
+    # Surface highest-SV striking keyword to help AI balance proximity vs volume
+    high_sv_kws = sorted(striking_kws, key=lambda k: k.get("search_volume", 0), reverse=True)
+    high_sv_note = ""
+    if high_sv_kws:
+        top_sv_kw = high_sv_kws[0]
+        top_sv = int(top_sv_kw.get("search_volume", 0))
+        primary_sv = int(url_group.get("primary_kw_sv") or 0)
+        if top_sv >= 500 and primary_sv > 0 and top_sv > primary_sv:
+            high_sv_note = (
+                f'\n⚠ HIGH-SV ALERT: "{top_sv_kw["keyword"]}" has SV {top_sv:,} — significantly '
+                f'higher than the top-opportunity keyword (SV {primary_sv:,}). '
+                f'Ensure it appears in the title or H1 unless the page scope makes it inappropriate.'
+            )
+
     # ── Page content block (from Screaming Frog) ─────────────────────────
     content_lines = []
     if word_count is not None:
@@ -246,7 +289,7 @@ You have full flexibility to choose the primary keyword from the striking distan
 
     return f"""PAGE TO OPTIMISE:
 URL: {url}
-Primary keyword: {primary_kw}
+Primary keyword (highest opportunity score): {primary_kw}
 
 CURRENT ON-PAGE:
   Title: {curr_title}
@@ -255,7 +298,7 @@ CURRENT ON-PAGE:
 {page_content_block}
 {protected_block}
 STRIKING DISTANCE KEYWORDS TO IMPROVE (pos 4–20):
-{kw_block}
+{kw_block}{high_sv_note}
 
 TOP 3 SERP COMPETITORS:
 {comp_blocks}

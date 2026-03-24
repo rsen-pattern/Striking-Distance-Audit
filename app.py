@@ -62,6 +62,7 @@ def _build_keyword_map(
     min_pos: int,
     max_pos: int,
     brand_name: str,
+    competitor_brands: str,
     max_urls: int,
 ) -> list[dict]:
     semrush_df = _load_semrush(semrush_bytes, semrush_url)
@@ -73,6 +74,7 @@ def _build_keyword_map(
         min_pos=min_pos,
         max_pos=max_pos,
         brand_name=brand_name,
+        competitor_brands=competitor_brands,
         max_urls=max_urls,
     )
 
@@ -678,7 +680,9 @@ def run_audit_pipeline(cfg: dict, status_ph, progress_ph, log_ph, metrics_ph, re
             excel_bytes, excel_bytes,
             semrush_url, crawl_url,
             cfg["min_sv"], cfg["min_pos"], cfg["max_pos"],
-            brand_rules.get("brand_name", ""), cfg["max_urls"],
+            brand_rules.get("brand_name", ""),
+            brand_rules.get("competitor_brands", ""),
+            cfg["max_urls"],
         )
     except Exception as exc:
         st.error(f"Failed to build keyword map: {exc}")

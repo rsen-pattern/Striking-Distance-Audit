@@ -5,6 +5,7 @@ Build per-URL groups ready for SERP fetch + AI processing.
 """
 
 import logging
+import math
 import re
 from typing import Any
 
@@ -32,19 +33,26 @@ STRIKING_BUCKETS = {"PRIME_STRIKING", "PAGE1_STRIKING", "PAGE2_STRIKING"}
 # ---------------------------------------------------------------------------
 
 
+_LOG10_SV_MAX = math.log10(10_001)   # normalisation constant
+
+
 def _opportunity_score(row: pd.Series, protected_kw_set: set) -> float:
     """
     Score a striking-distance keyword 0–100.
-    Penalise by 90% if the keyword already appears in the protected set
-    (it ranks top 3 — should not become the primary optimisation target).
+
+    SV uses a log scale so that 1,900 SV is meaningfully better than 170 SV
+    (linear scaling made them look almost identical).  Proximity weight is
+    reduced to 30 so SV can influence primary-keyword selection.
+
+    Weights: proximity=30, sv=40, kd=20, momentum=10
     """
     pos   = float(row.get("position", 15))
     sv    = float(row.get("search_volume", 0))
     kd    = float(row.get("kd", 50))
     delta = float(row.get("delta") or 0)
 
-    proximity = max(0.0, (21 - pos) / 17) * 40
-    sv_score  = min(sv / 10_000, 1.0) * 30
+    proximity = max(0.0, (21 - pos) / 17) * 30
+    sv_score  = math.log10(max(sv, 1) + 1) / _LOG10_SV_MAX * 40
     kd_score  = max(0.0, (100 - kd) / 100) * 20
     momentum  = min(max(delta / 5, -1.0), 1.0) * 10
     score     = proximity + sv_score + kd_score + momentum
@@ -90,6 +98,7 @@ def build_url_keyword_map(
     min_pos: int = 4,
     max_pos: int = 20,
     brand_name: str = "",
+    competitor_brands: str = "",
     max_urls: int = 0,
 ) -> list[dict[str, Any]]:
     """
@@ -148,10 +157,17 @@ def build_url_keyword_map(
         striking_df = striking_df[
             ~striking_df["url"].str.contains(NAVIGATIONAL_URL_PATTERNS, na=False, regex=True)
         ]
+        # Filter own brand words
         if brand_name:
             for bw in [w.strip().lower() for w in brand_name.split() if len(w) > 2]:
                 striking_df = striking_df[
                     ~striking_df["keyword"].str.lower().str.contains(re.escape(bw), na=False)
+                ]
+        # Filter competitor brand words (comma-separated list from BrandRules)
+        if competitor_brands:
+            for cb in [w.strip().lower() for w in competitor_brands.split(",") if len(w.strip()) > 2]:
+                striking_df = striking_df[
+                    ~striking_df["keyword"].str.lower().str.contains(re.escape(cb), na=False)
                 ]
 
         # Skip URLs with no striking keywords — nothing to optimise

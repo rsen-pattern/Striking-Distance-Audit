@@ -92,6 +92,8 @@ BRAND_COL_MAP = {
     "audience": "audience",
     "offer phrases allowed": "offer_phrases_allowed",
     "meta length cap": "meta_length_cap",
+    "competitor brands": "competitor_brands",
+    "competitor brand names": "competitor_brands",
 }
 
 
@@ -414,6 +416,7 @@ def _default_brand_rules() -> dict:
         "audience": "General audience",
         "offer_phrases_allowed": "Yes",
         "meta_length_cap": 160,
+        "competitor_brands": "",
     }
 
 
