@@ -28,6 +28,11 @@ NAVIGATIONAL_URL_PATTERNS = re.compile(
 
 STRIKING_BUCKETS = {"PRIME_STRIKING", "PAGE1_STRIKING", "PAGE2_STRIKING"}
 
+# Minimum SV a keyword must have to be considered "worth its own page"
+NEW_PAGE_MIN_SV = 300
+# Minimum number of supporting keywords needed before suggesting a new page
+NEW_PAGE_CLUSTER_MIN = 2
+
 # ---------------------------------------------------------------------------
 # Opportunity score (protected-aware)
 # ---------------------------------------------------------------------------
@@ -102,6 +107,207 @@ def assign_keyword_decision(row: pd.Series, sv_threshold: int = REPLACE_SV_THRES
         return "REPLACE"
     # Declining on page 1 — still monitor (don't throw away a page 1 ranking)
     return "MONITOR"
+
+
+# ---------------------------------------------------------------------------
+# Overwrite risk assessment
+# ---------------------------------------------------------------------------
+
+
+def compute_page_overwrite_risk(url_group: dict) -> dict:
+    """
+    Assess how risky it is to change the title / meta / H1 of this page.
+
+    A page is "high risk to overwrite" when it already has strong top-3
+    rankings whose SV dwarfs the striking-distance opportunity — any title
+    change could disrupt those established rankings.
+
+    Returns:
+        overwrite_confidence  int 0–100  (100 = very safe to change)
+        risk_level            "low" | "medium" | "high"
+        risk_reasons          list[str] — human-readable explanation
+    """
+    protected  = url_group.get("protected_keywords", [])
+    striking   = url_group.get("striking_keywords", [])
+    primary_sv = int(url_group.get("primary_kw_sv") or 0)
+
+    # No protected keywords → low risk
+    if not protected:
+        return {
+            "overwrite_confidence": 90,
+            "risk_level":           "low",
+            "risk_reasons":         ["No top-3 keywords currently at risk"],
+        }
+
+    protected_svs    = [int(k.get("search_volume", 0)) for k in protected]
+    max_protected_sv = max(protected_svs)
+    total_protected_sv = sum(protected_svs)
+    protected_count  = len(protected)
+
+    total_optimise_sv = sum(
+        int(k.get("search_volume", 0)) for k in striking
+        if k.get("decision") == "OPTIMISE"
+    )
+
+    confidence = 100
+    reasons: list[str] = []
+
+    # --- Risk 1: Primary target SV vs best protected keyword SV ---------------
+    if max_protected_sv > 0 and primary_sv > 0:
+        ratio = primary_sv / max_protected_sv
+        if ratio < 0.20:
+            confidence -= 45
+            reasons.append(
+                f"Target keyword SV ({primary_sv:,}) is less than 20% of best "
+                f"protected keyword SV ({max_protected_sv:,}) — poor trade-off"
+            )
+        elif ratio < 0.50:
+            confidence -= 25
+            reasons.append(
+                f"Target keyword SV ({primary_sv:,}) is less than 50% of best "
+                f"protected keyword SV ({max_protected_sv:,})"
+            )
+        elif ratio < 1.00:
+            confidence -= 10
+            reasons.append(
+                f"Target keyword SV ({primary_sv:,}) is below best protected SV ({max_protected_sv:,})"
+            )
+
+    # --- Risk 2: Number of protected keywords at stake ------------------------
+    if protected_count >= 3:
+        confidence -= 20
+        reasons.append(
+            f"{protected_count} top-3 keywords could be disrupted — handle with care"
+        )
+    elif protected_count >= 1:
+        confidence -= 10
+        reasons.append(
+            f"{protected_count} top-3 keyword(s) must be preserved in recommendations"
+        )
+
+    # --- Risk 3: Total striking opportunity vs total protected SV -------------
+    if total_protected_sv > 0 and total_optimise_sv > 0:
+        if total_optimise_sv < total_protected_sv * 0.5:
+            confidence -= 15
+            reasons.append(
+                f"Total OPTIMISE opportunity SV ({total_optimise_sv:,}) is less than "
+                f"half the existing protected SV ({total_protected_sv:,})"
+            )
+
+    # --- Risk 4: Declining primary keyword (risky time to change) -------------
+    primary_kw  = url_group.get("primary_keyword", "")
+    primary_rec = next(
+        (k for k in striking if k.get("keyword") == primary_kw), None
+    )
+    if primary_rec and primary_rec.get("trend") == "declining":
+        confidence -= 10
+        reasons.append(
+            "Primary target keyword is on a declining trend — optimise with caution"
+        )
+
+    confidence = max(0, min(100, confidence))
+
+    if confidence >= 70:
+        risk_level = "low"
+    elif confidence >= 40:
+        risk_level = "medium"
+    else:
+        risk_level = "high"
+
+    if not reasons:
+        reasons.append("Protected keywords present but striking opportunity is comparable")
+
+    return {
+        "overwrite_confidence": confidence,
+        "risk_level":           risk_level,
+        "risk_reasons":         reasons,
+    }
+
+
+# ---------------------------------------------------------------------------
+# New-page candidate detection
+# ---------------------------------------------------------------------------
+
+_STOP_WORDS = frozenset({
+    "the", "and", "for", "are", "with", "from", "that", "this",
+    "buy", "shop", "best", "top", "cheap", "online", "sale",
+    "new", "all", "our", "get", "how", "what", "when", "where",
+})
+
+
+def _significant_words(text: str) -> set[str]:
+    """Extract non-stop, non-trivial words from a keyword phrase."""
+    return {
+        w.lower() for w in re.findall(r"[a-z]+", text.lower())
+        if len(w) > 3 and w.lower() not in _STOP_WORDS
+    }
+
+
+def find_new_page_candidates(
+    striking_records: list[dict],
+    primary_kw: str,
+    current_title: str,
+    min_sv: int = NEW_PAGE_MIN_SV,
+    cluster_min: int = NEW_PAGE_CLUSTER_MIN,
+) -> list[dict]:
+    """
+    Identify striking keywords that may be better served by a dedicated new
+    page rather than optimising the current page.
+
+    A keyword is a "new page candidate" when:
+      1. SV >= min_sv  (sufficient volume to justify the effort)
+      2. It shares fewer than 2 significant words with the current page's
+         primary keyword / title  (different intent / topic)
+      3. At least `cluster_min` such keywords exist (a new page has enough
+         supporting keyword coverage to succeed)
+
+    Returns a list of candidate dicts:
+        keyword, search_volume, position, rationale, suggested_slug
+    """
+    page_words = _significant_words(primary_kw) | _significant_words(current_title)
+
+    candidates: list[dict] = []
+    for kw in striking_records:
+        sv  = int(kw.get("search_volume", 0))
+        kw_text = kw.get("keyword", "")
+        if sv < min_sv or not kw_text:
+            continue
+
+        kw_words = _significant_words(kw_text)
+        shared   = kw_words & page_words
+
+        # Fewer than 2 shared significant words = different intent
+        if len(shared) < 2:
+            candidates.append(kw)
+
+    # Only surface candidates if there are enough to support a new page
+    if len(candidates) < cluster_min:
+        return []
+
+    results = []
+    for kw in candidates:
+        kw_text = kw.get("keyword", "")
+        sv      = int(kw.get("search_volume", 0))
+        pos     = kw.get("position", "?")
+
+        # Suggest a URL slug from the keyword
+        slug = re.sub(r"[^a-z0-9]+", "-", kw_text.lower()).strip("-")
+
+        results.append({
+            "keyword":       kw_text,
+            "search_volume": sv,
+            "position":      pos,
+            "rationale": (
+                f"SV {sv:,} at pos {pos} — topic differs from current page focus "
+                f"('{primary_kw}'). A dedicated page could rank this keyword "
+                f"without competing with existing content."
+            ),
+            "suggested_slug": slug,
+        })
+
+    # Sort by SV descending
+    results.sort(key=lambda r: r["search_volume"], reverse=True)
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -236,12 +442,12 @@ def build_url_keyword_map(
         h3s = [on_page.get("h3_1", "")]
         h3s = [h for h in h3s if h and str(h).strip()]
 
-        groups.append({
+        # Build partial group first so risk functions have full context
+        partial_group = {
             "url":                url,
             "primary_keyword":    primary["keyword"],
             "primary_kw_position":primary["position"],
             "primary_kw_sv":      primary.get("search_volume", 0),
-            # Highest-SV keyword (may differ from primary) for dual SERP fetch
             "highest_sv_keyword": highest_sv_kw.get("keyword") if highest_sv_kw else None,
             "highest_sv_kw_sv":   highest_sv_kw.get("search_volume", 0) if highest_sv_kw else 0,
             "protected_keywords": protected_df.to_dict("records"),
@@ -251,7 +457,6 @@ def build_url_keyword_map(
             "optimise_count":     optimise_count,
             "replace_count":      replace_count,
             "monitor_count":      monitor_count,
-            # On-page from Screaming Frog
             "current_title":      on_page.get("title", ""),
             "current_meta":       on_page.get("meta_description", ""),
             "current_h1":         on_page.get("h1", ""),
@@ -261,6 +466,24 @@ def build_url_keyword_map(
             "readability":        on_page.get("readability"),
             "page_copy":          on_page.get("page_copy", ""),
             "total_opportunity":  total_opp,
+        }
+
+        # ── Overwrite risk assessment ──────────────────────────────────────
+        overwrite_risk = compute_page_overwrite_risk(partial_group)
+
+        # ── New-page candidate detection ───────────────────────────────────
+        new_page_candidates = find_new_page_candidates(
+            striking_records=striking_records,
+            primary_kw=primary["keyword"],
+            current_title=on_page.get("title", ""),
+        )
+
+        groups.append({
+            **partial_group,
+            "overwrite_confidence": overwrite_risk["overwrite_confidence"],
+            "overwrite_risk_level": overwrite_risk["risk_level"],
+            "overwrite_risk_reasons": overwrite_risk["risk_reasons"],
+            "new_page_candidates":  new_page_candidates,
         })
 
     groups.sort(key=lambda g: g["total_opportunity"], reverse=True)

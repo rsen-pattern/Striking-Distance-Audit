@@ -22,6 +22,10 @@ HIGHLIGHT_COLS = ["recommended_title", "recommended_meta", "recommended_h1", "ai
 # Columns highlighted for protection warnings
 PROTECTION_WARNING_COLS = ["protection_check"]
 
+# Columns that carry risk colouring (applied by value, not column name alone)
+OVERWRITE_HIGH_RISK_COLS = ["overwrite_risk_summary"]
+NEW_PAGE_COLS            = ["new_page_recommendations"]
+
 COL_WIDTHS = {
     "url":                   45,
     "primary_keyword":       30,
@@ -56,8 +60,11 @@ COL_WIDTHS = {
     "comp3_url":             45,
     "comp3_title":           50,
     "comp3_meta":            60,
-    "scrape_success":        14,
-    "run_timestamp":         22,
+    "scrape_success":             14,
+    "overwrite_confidence":       12,
+    "overwrite_risk_summary":     50,
+    "new_page_recommendations":   60,
+    "run_timestamp":              22,
 }
 
 
@@ -67,6 +74,22 @@ def _format_replacements(replacement_dict: dict) -> str:
         return ""
     lines = [f"{kw} → {repl}" for kw, repl in replacement_dict.items()]
     return " | ".join(lines)
+
+
+def _format_new_page_recs(recs: list) -> str:
+    """Format new-page recommendations into a readable pipe-separated string."""
+    if not recs:
+        return ""
+    parts = []
+    for r in recs[:5]:
+        kw   = r.get("keyword") or r.get("suggested_url_slug") or "?"
+        slug = r.get("suggested_url_slug") or r.get("suggested_slug") or ""
+        rat  = r.get("rationale", "")
+        line = f"/{slug}/ — \"{kw}\""
+        if rat:
+            line += f" ({rat[:80]}{'…' if len(rat) > 80 else ''})"
+        parts.append(line)
+    return " | ".join(parts)
 
 
 def build_output_dataframe(processed_results: list[dict[str, Any]]) -> pd.DataFrame:
@@ -145,6 +168,13 @@ def build_output_dataframe(processed_results: list[dict[str, Any]]) -> pd.DataFr
             "comp3_url":   comp_field(2, "url"),
             "comp3_title": comp_field(2, "title"),
             "comp3_meta":  comp_field(2, "meta_description"),
+            # Overwrite risk (pre-computed in keyword_analysis, confirmed by AI)
+            "overwrite_confidence":    ai.get("overwrite_confidence", ug.get("overwrite_confidence", "")),
+            "overwrite_risk_summary":  ai.get("overwrite_risk_summary", ug.get("overwrite_risk_level", "")),
+            # New-page recommendations (merged: AI output first, fallback to pre-computed candidates)
+            "new_page_recommendations": _format_new_page_recs(
+                ai.get("new_page_recommendations") or ug.get("new_page_candidates", [])
+            ),
             # Metadata
             "scrape_success": scrape_pct,
             "run_timestamp": run_ts,
@@ -181,8 +211,27 @@ def to_excel_bytes(df: pd.DataFrame) -> bytes:
             "valign": "top",
         })
         warning_fmt = wb.add_format({
-            "bg_color": "#2d0a10",      # Dark red (replace surface)
+            "bg_color": "#2d0a10",      # Dark red (replace / protect warning surface)
             "font_color": "#f56969",    # Chart red
+            "text_wrap": True,
+            "valign": "top",
+        })
+        risk_high_fmt = wb.add_format({
+            "bg_color": "#2d0a10",      # Same dark red as warnings
+            "font_color": "#f56969",
+            "bold": True,
+            "text_wrap": True,
+            "valign": "top",
+        })
+        risk_medium_fmt = wb.add_format({
+            "bg_color": "#2a1a00",      # Dark amber
+            "font_color": "#ffcc44",    # Amber
+            "text_wrap": True,
+            "valign": "top",
+        })
+        new_page_fmt = wb.add_format({
+            "bg_color": "#001a2d",      # Dark teal-blue
+            "font_color": "#4cc3ae",    # Secondary teal
             "text_wrap": True,
             "valign": "top",
         })
@@ -201,13 +250,32 @@ def to_excel_bytes(df: pd.DataFrame) -> bytes:
         for ri, row in enumerate(df.itertuples(index=False), start=1):
             for ci, cn in enumerate(col_names):
                 val = getattr(row, cn, "") or ""
+                val_str = str(val)
                 if cn in HIGHLIGHT_COLS:
                     fmt = highlight_fmt
-                elif cn in PROTECTION_WARNING_COLS and "WARNING" in str(val):
+                elif cn in PROTECTION_WARNING_COLS and "WARNING" in val_str:
                     fmt = warning_fmt
+                elif cn in OVERWRITE_HIGH_RISK_COLS and "HIGH" in val_str:
+                    fmt = risk_high_fmt
+                elif cn in OVERWRITE_HIGH_RISK_COLS and "MEDIUM" in val_str:
+                    fmt = risk_medium_fmt
+                elif cn == "overwrite_confidence":
+                    # Colour the numeric score by level
+                    try:
+                        score = int(float(val_str))
+                        if score < 40:
+                            fmt = risk_high_fmt
+                        elif score < 70:
+                            fmt = risk_medium_fmt
+                        else:
+                            fmt = normal_fmt
+                    except (ValueError, TypeError):
+                        fmt = normal_fmt
+                elif cn in NEW_PAGE_COLS and val_str:
+                    fmt = new_page_fmt
                 else:
                     fmt = normal_fmt
-                ws.write(ri, ci, str(val), fmt)
+                ws.write(ri, ci, val_str, fmt)
 
         for ci, cn in enumerate(col_names):
             ws.set_column(ci, ci, COL_WIDTHS.get(cn, 20))

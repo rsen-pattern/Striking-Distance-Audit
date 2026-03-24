@@ -270,6 +270,45 @@ You have full flexibility to choose the primary keyword from the striking distan
         for i, comp in enumerate(competitors)
     ) or "  No competitor data available."
 
+    # ── Overwrite risk block ──────────────────────────────────────────────
+    ow_confidence = url_group.get("overwrite_confidence")
+    ow_risk_level = url_group.get("overwrite_risk_level", "low")
+    ow_reasons    = url_group.get("overwrite_risk_reasons", [])
+
+    if ow_confidence is not None:
+        risk_emoji = {"low": "✅", "medium": "⚠", "high": "🚨"}.get(ow_risk_level, "⚠")
+        reasons_text = "\n".join(f"  - {r}" for r in ow_reasons) or "  - No specific concerns"
+        overwrite_block = f"""
+OVERWRITE RISK ASSESSMENT {risk_emoji} — confidence score: {ow_confidence}/100 ({ow_risk_level.upper()} RISK)
+{reasons_text}
+INSTRUCTION: When risk is HIGH, you MUST acknowledge the risk in your rationale and
+explain why the recommended changes are still worthwhile. If the striking opportunity
+does not clearly justify the risk, say so explicitly and recommend a lighter-touch
+approach (e.g., only update meta description, leave title/H1 intact).
+"""
+    else:
+        overwrite_block = ""
+
+    # ── New-page candidates block ─────────────────────────────────────────
+    new_page_candidates = url_group.get("new_page_candidates", [])
+    if new_page_candidates:
+        np_lines = "\n".join(
+            f'  - "{c["keyword"]}" | SV {c["search_volume"]:,} | pos {c["position"]} '
+            f'| suggested slug: /{c["suggested_slug"]}/'
+            for c in new_page_candidates[:5]
+        )
+        new_page_block = f"""
+NEW PAGE OPPORTUNITY — {len(new_page_candidates)} keywords may be better served by a dedicated page:
+{np_lines}
+INSTRUCTION: For each of these keywords, decide in your response whether:
+  (a) It should be a NEW PAGE (recommend in new_page_recommendations), or
+  (b) It can still be worked into the current page without diluting its focus.
+Do NOT force these keywords into the current page's title/H1 if they represent
+a different user intent.
+"""
+    else:
+        new_page_block = ""
+
     # ── JSON schema ───────────────────────────────────────────────────────
     json_schema = """{
   "url": "...",
@@ -277,6 +316,7 @@ You have full flexibility to choose the primary keyword from the striking distan
   "recommended_meta": "...",
   "recommended_h1": "...",
   "rationale": "...",
+  "overwrite_confidence_note": "...",
   "protected_kw_retained": true,
   "protected_kw_used": "..." or null,
   "keyword_decisions": [
@@ -286,6 +326,13 @@ You have full flexibility to choose the primary keyword from the striking distan
       "decision": "OPTIMISE|REPLACE|MONITOR|PROTECT",
       "replacement_keyword": null,
       "note": "..."
+    }
+  ],
+  "new_page_recommendations": [
+    {
+      "keyword": "...",
+      "rationale": "...",
+      "suggested_url_slug": "..."
     }
   ]
 }"""
@@ -302,7 +349,8 @@ CURRENT ON-PAGE:
 {protected_block}
 STRIKING DISTANCE KEYWORDS TO IMPROVE (pos 4–20):
 {kw_block}{high_sv_note}
-
+{overwrite_block}
+{new_page_block}
 TOP 3 SERP COMPETITORS:
 {comp_blocks}
 
@@ -310,7 +358,9 @@ TASK:
 1. Recommend optimised title, meta description, H1 — respecting protected keyword constraints above.
 2. For each REPLACE keyword: suggest 1 better replacement.
 3. Confirm or override each keyword decision.
-4. One-sentence rationale for your approach.
+4. Address the overwrite risk: explain whether the changes are safe or if a lighter-touch approach is better.
+5. For any new-page candidate keywords: recommend new page or justify including on this page.
+6. One-sentence overall rationale.
 
 Return this exact JSON:
 {json_schema}"""
@@ -377,6 +427,42 @@ def validate_protection(rec: dict, url_group: dict) -> dict:
     return rec
 
 
+def validate_overwrite_risk(rec: dict, url_group: dict) -> dict:
+    """
+    After AI parse: annotate the result with the pre-computed overwrite risk
+    so the output always carries the confidence score regardless of whether
+    the AI faithfully echoed it.
+
+    Adds / overwrites:
+        overwrite_confidence  int
+        overwrite_risk_level  str
+        overwrite_risk_reasons  list[str]
+        overwrite_risk_summary  str  (human-readable one-liner)
+    """
+    risk_level  = url_group.get("overwrite_risk_level", "low")
+    confidence  = url_group.get("overwrite_confidence", 90)
+    reasons     = url_group.get("overwrite_risk_reasons", [])
+
+    rec["overwrite_confidence"]   = confidence
+    rec["overwrite_risk_level"]   = risk_level
+    rec["overwrite_risk_reasons"] = reasons
+
+    if risk_level == "high":
+        rec["overwrite_risk_summary"] = (
+            f"HIGH RISK ({confidence}/100) — "
+            f"{reasons[0] if reasons else 'strong existing rankings at stake'}"
+        )
+    elif risk_level == "medium":
+        rec["overwrite_risk_summary"] = (
+            f"MEDIUM RISK ({confidence}/100) — proceed with care. "
+            f"{reasons[0] if reasons else ''}"
+        )
+    else:
+        rec["overwrite_risk_summary"] = f"LOW RISK ({confidence}/100) — safe to optimise"
+
+    return rec
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -439,16 +525,21 @@ def generate_recommendations_for_url(
         return None
 
     # Safe defaults
-    parsed.setdefault("url",                  url_group["url"])
-    parsed.setdefault("recommended_title",    "")
-    parsed.setdefault("recommended_meta",     "")
-    parsed.setdefault("recommended_h1",       "")
-    parsed.setdefault("rationale",            "")
-    parsed.setdefault("protected_kw_retained", None)
-    parsed.setdefault("protected_kw_used",    None)
-    parsed.setdefault("keyword_decisions",    [])
+    parsed.setdefault("url",                       url_group["url"])
+    parsed.setdefault("recommended_title",         "")
+    parsed.setdefault("recommended_meta",          "")
+    parsed.setdefault("recommended_h1",            "")
+    parsed.setdefault("rationale",                 "")
+    parsed.setdefault("overwrite_confidence_note", "")
+    parsed.setdefault("protected_kw_retained",     None)
+    parsed.setdefault("protected_kw_used",         None)
+    parsed.setdefault("keyword_decisions",         [])
+    parsed.setdefault("new_page_recommendations",  [])
 
     # Validate protected keyword was respected
     parsed = validate_protection(parsed, url_group)
+
+    # Always stamp the authoritative overwrite risk onto the result
+    parsed = validate_overwrite_risk(parsed, url_group)
 
     return parsed
