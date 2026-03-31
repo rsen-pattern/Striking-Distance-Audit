@@ -33,6 +33,7 @@ COL_WIDTHS = {
     "primary_kw_sv":         10,
     "kw_count_in_range":     10,
     "protected_count":       10,
+    "already_opt_count":     10,
     "optimise_count":        10,
     "replace_count":         10,
     "current_title":         50,
@@ -135,6 +136,7 @@ def build_output_dataframe(processed_results: list[dict[str, Any]]) -> pd.DataFr
             "primary_kw_sv":         ug.get("primary_kw_sv", ""),
             "kw_count_in_range":     ug.get("kw_count", len(striking)),
             "protected_count":       ug.get("protected_count", len(protected)),
+            "already_opt_count":     ug.get("already_opt_count", 0),
             "optimise_count":        ug.get("optimise_count", len(optimise_kws)),
             "replace_count":         ug.get("replace_count", len(replace_kws)),
             # Current on-page

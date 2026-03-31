@@ -65,6 +65,9 @@ def _build_keyword_map(
     brand_name: str,
     competitor_brands: str,
     max_urls: int,
+    exclude_locations: bool,
+    extra_location_terms: str,
+    exclude_misspelt: bool,
 ) -> list[dict]:
     semrush_df = _load_semrush(semrush_bytes, semrush_url)
     crawl_df   = _load_crawl(crawl_bytes, crawl_url)
@@ -77,6 +80,9 @@ def _build_keyword_map(
         brand_name=brand_name,
         competitor_brands=competitor_brands,
         max_urls=max_urls,
+        exclude_locations=exclude_locations,
+        extra_location_terms=extra_location_terms,
+        exclude_misspelt=exclude_misspelt,
     )
 
 st.set_page_config(
@@ -342,6 +348,32 @@ def render_sidebar() -> dict:
     semrush_db       = st.sidebar.selectbox("Semrush database", ["us", "au", "uk", "ca", "nz"], index=1)
     max_urls         = st.sidebar.number_input("Max URLs to process (0 = all)", min_value=0, value=50, step=10)
 
+    st.sidebar.markdown("**Keyword exclusions**")
+    exclude_locations = st.sidebar.checkbox(
+        "Exclude location-based keywords",
+        value=True,
+        help="Remove keywords containing city/state names or 'near me' — "
+             "we wouldn't optimise a collection page for a specific location.",
+    )
+    extra_location_terms = ""
+    if exclude_locations:
+        extra_location_terms = st.sidebar.text_input(
+            "Extra location terms to exclude (comma-separated)",
+            value="",
+            placeholder="e.g. nz, auckland, london",
+            help="Add locations beyond the built-in AU list.",
+        )
+
+    from modules.keyword_analysis import SPELL_AVAILABLE as _spell_ok
+    exclude_misspelt = st.sidebar.checkbox(
+        "Exclude misspelt keywords",
+        value=_spell_ok,
+        help="Filter out keywords containing obvious misspellings. "
+             + ("pyspellchecker is installed ✓" if _spell_ok
+                else "⚠ Requires pyspellchecker — add to requirements.txt"),
+        disabled=not _spell_ok,
+    )
+
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Performance")
     concurrent_workers = st.sidebar.slider(
@@ -368,6 +400,9 @@ def render_sidebar() -> dict:
         semrush_csv_url=semrush_csv_url, crawl_csv_url=crawl_csv_url, brand_csv_url=brand_csv_url,
         min_pos=int(min_pos), max_pos=int(max_pos), min_sv=int(min_sv),
         semrush_db=semrush_db, max_urls=int(max_urls),
+        exclude_locations=bool(exclude_locations),
+        extra_location_terms=str(extra_location_terms),
+        exclude_misspelt=bool(exclude_misspelt),
         concurrent_workers=int(concurrent_workers),
         output_sheet_url=output_sheet_url, service_account_json=service_account_json,
         run_audit=run_audit,
@@ -703,6 +738,9 @@ def run_audit_pipeline(cfg: dict, status_ph, progress_ph, log_ph, metrics_ph, re
             brand_rules.get("brand_name", ""),
             brand_rules.get("competitor_brands", ""),
             cfg["max_urls"],
+            cfg.get("exclude_locations", True),
+            cfg.get("extra_location_terms", ""),
+            cfg.get("exclude_misspelt", False),
         )
     except Exception as exc:
         st.error(f"Failed to build keyword map: {exc}")

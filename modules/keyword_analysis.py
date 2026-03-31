@@ -1,6 +1,6 @@
 """
 keyword_analysis.py
-Filter, score, and make decisions on striking-distance keywords.
+Filter, score, and decide on striking-distance keywords.
 Build per-URL groups ready for SERP fetch + AI processing.
 """
 
@@ -12,6 +12,16 @@ from typing import Any
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+# Spell checker — optional dependency; graceful fallback if not installed
+try:
+    from spellchecker import SpellChecker as _SpellChecker
+    _spell = _SpellChecker()
+    SPELL_AVAILABLE = True
+except ImportError:
+    _spell = None
+    SPELL_AVAILABLE = False
+    logger.debug("pyspellchecker not installed — misspelling filter unavailable")
 
 # Keywords / URL path fragments that indicate navigational / branded intent
 NAVIGATIONAL_PATTERNS = re.compile(
@@ -34,31 +44,147 @@ NEW_PAGE_MIN_SV = 300
 NEW_PAGE_CLUSTER_MIN = 2
 
 # ---------------------------------------------------------------------------
+# Location keyword detection
+# ---------------------------------------------------------------------------
+
+# Australian cities, states, and generic location signals
+_AU_LOCATION_TERMS: frozenset[str] = frozenset({
+    # States / territories (abbrev + full)
+    "nsw", "vic", "qld", "sa", "wa", "tas", "act", "nt",
+    "new south wales", "victoria", "queensland", "south australia",
+    "western australia", "tasmania", "northern territory",
+    "australian capital territory",
+    # Major cities
+    "sydney", "melbourne", "brisbane", "perth", "adelaide", "canberra",
+    "hobart", "darwin",
+    # Regional cities
+    "gold coast", "newcastle", "wollongong", "geelong", "sunshine coast",
+    "cairns", "townsville", "toowoomba", "ballarat", "bendigo",
+    "launceston", "rockingham", "mackay", "albury", "wodonga",
+    "bundaberg", "hervey bay", "mildura", "shepparton", "gladstone",
+    "tamworth", "wagga wagga", "port macquarie", "orange", "dubbo",
+    "nowra", "warrnambool", "burnie", "devonport", "alice springs",
+    "geelong", "ipswich", "logan", "mandurah", "redcliffe",
+    # Generic location signals
+    "near me", "nearby", "near you", "closest", "local",
+    "australia", "australian",
+})
+
+
+def _is_location_keyword(keyword: str, extra_terms: set[str] | None = None) -> bool:
+    """True if keyword contains a location indicator."""
+    kw_l = keyword.lower()
+    terms = _AU_LOCATION_TERMS
+    if extra_terms:
+        terms = terms | {t.lower() for t in extra_terms}
+
+    for term in terms:
+        if " " in term:
+            if term in kw_l:
+                return True
+        else:
+            if re.search(r"\b" + re.escape(term) + r"\b", kw_l):
+                return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Misspelling detection
+# ---------------------------------------------------------------------------
+
+_SPELL_STOP = frozenset({
+    "the", "and", "for", "are", "with", "from", "that", "this",
+    "buy", "shop", "best", "top", "cheap", "online", "sale", "new",
+    "all", "our", "get", "how", "what", "when", "where", "plus",
+    "size", "plus", "mens", "womens", "kids", "girls", "boys",
+})
+
+
+def _contains_misspelling(keyword: str) -> bool:
+    """
+    True if any significant word in the keyword is likely misspelt.
+    Requires pyspellchecker to be installed — returns False if unavailable.
+    Conservative: only flags words where pyspellchecker has a clear correction.
+    """
+    if not SPELL_AVAILABLE or _spell is None:
+        return False
+    words = re.findall(r"[a-z]+", keyword.lower())
+    # Only check meaningful non-stop words
+    candidates = [w for w in words if len(w) > 3 and w not in _SPELL_STOP]
+    if not candidates:
+        return False
+    misspelt = _spell.unknown(candidates)
+    for w in misspelt:
+        correction = _spell.correction(w)
+        # Only flag when a definite correction exists and it's not just a variant
+        if correction and correction != w:
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Already-in-metadata detection
+# ---------------------------------------------------------------------------
+
+def _is_already_in_metadata(keyword: str, title: str, meta: str) -> bool:
+    """
+    True if a keyword is already well-represented in BOTH the page title
+    AND the meta description — meaning there's nothing to optimise.
+
+    Uses significant-word coverage: if ≥ 75% of meaningful words (len > 3)
+    from the keyword appear in both title and meta, it's already optimised.
+    """
+    if not keyword:
+        return False
+    kw_l    = keyword.lower()
+    title_l = (title or "").lower()
+    meta_l  = (meta or "").lower()
+
+    if not title_l and not meta_l:
+        return False
+
+    # Full phrase match in both
+    if kw_l in title_l and kw_l in meta_l:
+        return True
+
+    # Word-coverage match
+    sig_words = [w for w in kw_l.split() if len(w) > 3]
+    if not sig_words:
+        return kw_l in title_l and kw_l in meta_l
+
+    title_cov = sum(1 for w in sig_words if w in title_l) / len(sig_words)
+    meta_cov  = sum(1 for w in sig_words if w in meta_l)  / len(sig_words)
+    return title_cov >= 0.75 and meta_cov >= 0.75
+
+# ---------------------------------------------------------------------------
 # Opportunity score (protected-aware)
 # ---------------------------------------------------------------------------
 
 
-_LOG10_SV_MAX = math.log10(10_001)   # normalisation constant
+
+# Log ceiling tuned to the 50–3,000 SV range typical of striking-distance KWs.
+# Lowering it from 10,001 steepens the curve so the difference between
+# SV 100 and SV 700 is clearly reflected in the score.
+_LOG10_SV_MAX = math.log10(5_001)
 
 
 def _opportunity_score(row: pd.Series, protected_kw_set: set) -> float:
     """
     Score a striking-distance keyword 0–100.
 
-    SV uses a log scale so that 1,900 SV is meaningfully better than 170 SV
-    (linear scaling made them look almost identical).  Proximity weight is
-    reduced to 30 so SV can influence primary-keyword selection.
-
-    Weights: proximity=30, sv=40, kd=20, momentum=10
+    Weights: sv=55, proximity=20, kd=15, momentum=10
+    SV is the dominant signal so a keyword at pos 8 with SV 700 clearly
+    outscores one at pos 5 with SV 70 (65 vs 54).  Proximity still matters
+    but never overrides a large SV advantage.
     """
     pos   = float(row.get("position", 15))
     sv    = float(row.get("search_volume", 0))
     kd    = float(row.get("kd", 50))
     delta = float(row.get("delta") or 0)
 
-    proximity = max(0.0, (21 - pos) / 17) * 30
-    sv_score  = math.log10(max(sv, 1) + 1) / _LOG10_SV_MAX * 40
-    kd_score  = max(0.0, (100 - kd) / 100) * 20
+    proximity = max(0.0, (21 - pos) / 17) * 20
+    sv_score  = math.log10(max(sv, 1) + 1) / _LOG10_SV_MAX * 55
+    kd_score  = max(0.0, (100 - kd) / 100) * 15
     momentum  = min(max(delta / 5, -1.0), 1.0) * 10
     score     = proximity + sv_score + kd_score + momentum
 
@@ -324,6 +450,9 @@ def build_url_keyword_map(
     brand_name: str = "",
     competitor_brands: str = "",
     max_urls: int = 0,
+    exclude_locations: bool = False,
+    extra_location_terms: str = "",   # comma-separated user-defined terms
+    exclude_misspelt: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Build a per-URL keyword map that separates PROTECTED (pos 1–3) keywords
@@ -394,6 +523,22 @@ def build_url_keyword_map(
                     ~striking_df["keyword"].str.lower().str.contains(re.escape(cb), na=False)
                 ]
 
+        # ── Optional filters ──────────────────────────────────────────────
+
+        # 1. Location keyword exclusion
+        if exclude_locations:
+            extra = {t.strip() for t in extra_location_terms.split(",") if t.strip()} \
+                    if extra_location_terms else None
+            striking_df = striking_df[
+                ~striking_df["keyword"].apply(lambda kw: _is_location_keyword(kw, extra))
+            ]
+
+        # 2. Misspelling exclusion
+        if exclude_misspelt and SPELL_AVAILABLE:
+            striking_df = striking_df[
+                ~striking_df["keyword"].apply(_contains_misspelling)
+            ]
+
         # Skip URLs with no striking keywords — nothing to optimise
         if striking_df.empty:
             continue
@@ -403,12 +548,26 @@ def build_url_keyword_map(
             lambda r: _opportunity_score(r, protected_kw_set), axis=1
         )
 
+        # Fetch on-page data now so the already-in-metadata check can use it
+        on_page_early = crawl_lookup.get(str(url), {})
+        curr_title_early = on_page_early.get("title", "")
+        curr_meta_early  = on_page_early.get("meta_description", "")
+
         striking_records: list[dict] = []
         for _, row in striking_df.iterrows():
             health = row.get("trend", "stable")
-            decision = assign_keyword_decision(
-                pd.Series({**row.to_dict(), "health_status": health})
-            )
+            kw_text = row.get("keyword", "")
+
+            # 3. Already-in-metadata check: if the keyword is well-represented
+            #    in BOTH current title and current meta, mark as already optimised
+            #    so the AI doesn't recommend pointless changes.
+            if _is_already_in_metadata(kw_text, curr_title_early, curr_meta_early):
+                decision = "ALREADY_OPTIMISED"
+            else:
+                decision = assign_keyword_decision(
+                    pd.Series({**row.to_dict(), "health_status": health})
+                )
+
             rec = row.to_dict()
             rec["health_status"] = health
             rec["decision"] = decision
@@ -416,23 +575,25 @@ def build_url_keyword_map(
 
         striking_records.sort(key=lambda r: r.get("opp_score", 0), reverse=True)
 
-        # Primary keyword = highest opportunity striking KW
-        # (protected_kw_set penalty ensures a top-3 KW never wins primary selection)
-        primary = striking_records[0] if striking_records else None
+        # Primary keyword = highest-scoring keyword that still needs work
+        # (skip ALREADY_OPTIMISED so we don't waste an API call on a done page)
+        actionable = [r for r in striking_records if r.get("decision") != "ALREADY_OPTIMISED"]
+        primary = actionable[0] if actionable else None
 
-        # Guard: if primary is None after filtering, skip this URL
+        # Guard: if nothing actionable after filtering, skip this URL
         if primary is None or not primary.get("keyword"):
             continue
 
-        # Also identify the highest-SV striking keyword (for dual SERP fetch)
-        sv_sorted = sorted(striking_records, key=lambda r: r.get("search_volume", 0), reverse=True)
+        # Highest-SV actionable keyword (for dual SERP fetch)
+        sv_sorted     = sorted(actionable, key=lambda r: r.get("search_volume", 0), reverse=True)
         highest_sv_kw = sv_sorted[0] if sv_sorted else None
 
-        # Crawl data for this URL
-        on_page = crawl_lookup.get(str(url), {})
+        # Crawl data for this URL (on_page_early already fetched above)
+        on_page = on_page_early
 
-        optimise_count = sum(1 for k in striking_records if k.get("decision") == "OPTIMISE")
-        replace_count  = sum(1 for k in striking_records if k.get("decision") == "REPLACE")
+        already_opt_count = sum(1 for k in striking_records if k.get("decision") == "ALREADY_OPTIMISED")
+        optimise_count    = sum(1 for k in striking_records if k.get("decision") == "OPTIMISE")
+        replace_count     = sum(1 for k in striking_records if k.get("decision") == "REPLACE")
         monitor_count  = sum(1 for k in striking_records if k.get("decision") == "MONITOR")
         total_opp      = sum(k.get("opp_score", 0) for k in striking_records)
 
@@ -452,11 +613,12 @@ def build_url_keyword_map(
             "highest_sv_kw_sv":   highest_sv_kw.get("search_volume", 0) if highest_sv_kw else 0,
             "protected_keywords": protected_df.to_dict("records"),
             "striking_keywords":  striking_records,
-            "kw_count":           len(striking_records),
-            "protected_count":    len(protected_df),
-            "optimise_count":     optimise_count,
-            "replace_count":      replace_count,
-            "monitor_count":      monitor_count,
+            "kw_count":            len(striking_records),
+            "protected_count":     len(protected_df),
+            "already_opt_count":   already_opt_count,
+            "optimise_count":      optimise_count,
+            "replace_count":       replace_count,
+            "monitor_count":       monitor_count,
             "current_title":      on_page.get("title", ""),
             "current_meta":       on_page.get("meta_description", ""),
             "current_h1":         on_page.get("h1", ""),
